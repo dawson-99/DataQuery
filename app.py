@@ -18,6 +18,7 @@ import uvicorn
 
 from src.config import settings
 from src.api.routers.query_router import router as query_router, start_cache_cleanup, stop_cache_cleanup
+from src.rule_review.router import router as rule_review_router
 from src.service.agent_factory import agent_factory
 from src.utils.logging_setup import logger, set_trace_id
 
@@ -183,6 +184,7 @@ def create_app() -> FastAPI:
 
     # 注册路由
     app.include_router(query_router)
+    app.include_router(rule_review_router)
 
     # 根路径
     @app.get("/", tags=["系统"])
@@ -198,6 +200,13 @@ def create_app() -> FastAPI:
                     "description": "智能查询服务（自动识别意图并路由）",
                     "endpoints": [
                         "POST /v1/query"
+                    ]
+                },
+                "rule_review": {
+                    "path": "/v1/rule-review",
+                    "description": "电力规则审查服务（RAG + LLM + Judge）",
+                    "endpoints": [
+                        "GET /v1/rule-review"
                     ]
                 }
             },

@@ -22,8 +22,9 @@ aiohttp>=3.9.0
 pandas>=2.2.0
 
 # ============================================================
-# SSE 流式响应（uvicorn[standard] 已包含 httptools/websockets）
-# sse-starlette 可选，当前项目使用原生 StreamingResponse
+# 测试依赖
 # ============================================================
-# sse-starlette>=1.8.0
+pytest>=8.0.0
+httpx>=0.27.0  # FastAPI TestClient 所需
+
 

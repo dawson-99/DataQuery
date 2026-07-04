@@ -130,6 +130,19 @@ class Settings:
         # 兼容旧配置：如果设置了LLM_MODEL，则作为默认值
         self.LLM_MODEL: str = os.getenv("LLM_MODEL", self.INTENT_MODEL)
 
+        # ====== 规则审查系统配置 ======
+        self.RULE_REVIEW_MODEL: str = os.getenv("RULE_REVIEW_MODEL", "qwen3-max")
+        self.RULE_REVIEW_API_KEY: str = os.getenv("RULE_REVIEW_API_KEY", self.DASHSCOPE_API_KEY)
+        self.RULE_REVIEW_API_BASE: str = os.getenv("RULE_REVIEW_API_BASE", self.DASHSCOPE_API_BASE)
+
+        self.JUDGE_MODEL: str = os.getenv("JUDGE_MODEL", "deepseek-v4")
+        self.JUDGE_API_KEY: str = os.getenv("JUDGE_API_KEY", "")
+        self.JUDGE_API_BASE: str = os.getenv("JUDGE_API_BASE", "")
+
+        self.EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+        self.RULE_DOCUMENTS_DIR: str = os.getenv("RULE_DOCUMENTS_DIR", "data/rule_documents")
+        self.RULE_INDEX_DIR: str = os.getenv("RULE_INDEX_DIR", "data/rule_index")
 
         # 模型请求中转服务配置
         self.GATEWAY_BASE_URL = os.getenv("GATEWAY_BASE_URL", "")
