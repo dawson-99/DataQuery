@@ -10,10 +10,11 @@ from src.config import settings
 
 __version__ = "0.1.0"
 
-# 暴露问题改写器，便于 pipeline 与测试使用
+# 暴露问题改写器与文档存储，便于 pipeline 与测试使用
+from src.rule_review.document_store import DocumentStore
 from src.rule_review.query_rewriter import QueryRewriter, get_default_rewriter
 
-__all__ = ["QueryRewriter", "get_default_rewriter", "__version__"]
+__all__ = ["QueryRewriter", "get_default_rewriter", "DocumentStore", "__version__"]
 
 
 def _ensure_dirs() -> None:
