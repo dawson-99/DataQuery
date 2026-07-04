@@ -191,3 +191,11 @@ LLM 直接调用（不走 LangChain Agent），使用 `SystemMessage + HumanMess
 | **内网模型直连** | `INNER_MODEL_ENABLE=TRUE` | `InnerModelAgent`（`inner_model_agent.py`） | 通过 aiohttp 直连内网模型服务的 SSE 流式 API |
 
 模型实例由 `agent_factory.py` 单例工厂管理，进程级共享。各阶段（意图识别、参数提取、格式化、图表生成、趋势分析）可使用**不同模型**，由 `src/config.py` 中对应的 `*_MODEL` / `*_API_KEY` / `*_API_BASE` 环境变量独立配置。
+
+
+
+### user rules
+
+1. 写完一个功能必须进行单元测试，测试不通过就继续修改，直到测试通过
+2. 每个功能完成后，必须提交代码到github
+3. 必须提交到github后才能够继续下一个功能的开发
