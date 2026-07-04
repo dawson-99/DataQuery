@@ -1,0 +1,95 @@
+{
+  "operations": {
+    "sum": {
+      "name": "求和",
+      "explicit_triggers": ["合计", "总计", "总共", "加总", "求和", "一共", "共多少", "总量"],
+      "implicit_triggers": ["是多少", "有多少", "达到多少", "为多少"],
+      "description": "对量化字段求和，用于汇总统计"
+    },
+    "average": {
+      "name": "简单平均",
+      "explicit_triggers": ["平均", "均值", "平均值", "平均水平"],
+      "implicit_triggers": [],
+      "description": "计算字段的简单平均值"
+    },
+    "weighted_average": {
+      "name": "加权平均",
+      "explicit_triggers": ["加权平均", "加权均价", "按量加权"],
+      "implicit_triggers": [],
+      "description": "按权重字段计算加权平均"
+    },
+    "subtract": {
+      "name": "逐行差值",
+      "explicit_triggers": ["差", "相差", "减去", "差值", "差距", "多出", "少了"],
+      "implicit_triggers": [],
+      "description": "计算同一行内两个【不同】字段的差值（逐行操作）。【关键限制】field 和 field_b 必须是两个不同的字段名，不能相同。如果用户问的是两个日期间某指标的变化量（如「5月3日与5月4日电价差值」），subtract 无法处理跨行减法——此时应仅用 group_by 按日期分组求平均，不做 subtract，差值由格式层自行计算。"
+    },
+    "multiply": {
+      "name": "逐行乘积",
+      "explicit_triggers": ["乘以", "乘积", "×"],
+      "implicit_triggers": [],
+      "description": "计算两个字段的乘积"
+    },
+    "divide": {
+      "name": "逐行相除",
+      "explicit_triggers": ["除以", "÷", "比值"],
+      "implicit_triggers": [],
+      "description": "计算两个字段的商"
+    },
+    "mom_change": {
+      "name": "环比",
+      "explicit_triggers": ["环比", "较上期", "较上月", "较上周", "环比变化", "环比增长", "环比下降", "环比涨跌"],
+      "implicit_triggers": [],
+      "description": "计算环比变化率"
+    },
+    "yoy_change": {
+      "name": "同比",
+      "explicit_triggers": ["同比", "较去年同期", "较上年同期", "同比变化", "同比增长", "同比下降", "与去年相比", "年同比"],
+      "implicit_triggers": [],
+      "description": "计算同比变化率"
+    },
+    "max": {
+      "name": "最大值",
+      "explicit_triggers": ["最大", "最高", "峰值", "最多", "最大的一次", "哪次最高", "最大值"],
+      "implicit_triggers": [],
+      "description": "找出字段的最大值"
+    },
+    "min": {
+      "name": "最小值",
+      "explicit_triggers": ["最小", "最低", "谷值", "最少", "最小的一次", "哪次最低", "最小值"],
+      "implicit_triggers": [],
+      "description": "找出字段的最小值"
+    },
+    "filter": {
+      "name": "条件过滤",
+      "explicit_triggers": ["大于", "小于", "等于", "≥", "≤", ">", "<", "=", "在...之间", "范围", "超过", "低于", "不超过", "至少", "最多"],
+      "implicit_triggers": [],
+      "description": "按条件过滤数据"
+    },
+    "top_n": {
+      "name": "取前N条",
+      "explicit_triggers": ["前N个", "前N条", "最高的N个", "最低的N个", "排名前N", "top N", "前几"],
+      "implicit_triggers": [],
+      "description": "取前N条记录"
+    },
+    "bottom_n": {
+      "name": "取后N条",
+      "explicit_triggers": ["后N个", "后N条", "最低的N个", "排名后N", "bottom N"],
+      "implicit_triggers": [],
+      "description": "取后N条记录"
+    },
+    "group_by": {
+      "name": "分组聚合",
+      "explicit_triggers": ["分别", "各", "每个", "按...分组", "逐个"],
+      "implicit_triggers": [],
+      "description": "按指定字段分组并聚合"
+    },
+    "count": {
+      "name": "计数",
+      "explicit_triggers": ["多少个", "几个", "数量", "几家", "多少家", "几条", "多少条", "共有多少", "一共多少", "共几个", "总共多少", "有几个", "有多少个"],
+      "implicit_triggers": ["有多少", "是多少个", "共有"],
+      "description": "统计数据条数，用于计算记录数量（如机组数、企业数等）"
+    }
+  }
+}
+

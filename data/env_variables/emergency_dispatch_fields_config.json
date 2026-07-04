@@ -1,0 +1,925 @@
+{
+  "table_name": "emergency_dispatch",
+  "table_display_name": "应急调度交易信息",
+  "fields": {
+    "businessTime": {
+      "display_name": "业务时间",
+      "type": "date",
+      "keywords": ["业务时间", "日期", "时间"],
+      "aggregatable": false,
+      "is_time_field": true
+    },
+    "marketId": {
+      "display_name": "场景编码",
+      "type": "string",
+      "keywords": ["场景编码", "marketId"],
+      "aggregatable": false
+    },
+    "sysName": {
+      "display_name": "直流名称",
+      "type": "string",
+      "keywords": ["直流名称", "直流", "线路名称"],
+      "aggregatable": false
+    },
+    "power": {
+      "display_name": "累计调整电量",
+      "type": "string",
+      "keywords": ["累计调整电量", "调整电量"],
+      "aggregatable": false
+    },
+    "sendrecv": {
+      "display_name": "送受双方",
+      "type": "string",
+      "keywords": ["送受双方", "送受", "送端", "受端"],
+      "aggregatable": false
+    },
+    "planDate": {
+      "display_name": "计划日期",
+      "type": "string",
+      "keywords": ["计划日期", "计划时间"],
+      "aggregatable": false
+    },
+    "seller": {
+      "display_name": "售电方",
+      "type": "string",
+      "keywords": ["售电方", "卖方"],
+      "aggregatable": false
+    },
+    "buyer": {
+      "display_name": "购电方",
+      "type": "string",
+      "keywords": ["购电方", "买方"],
+      "aggregatable": false
+    },
+    "reason": {
+      "display_name": "调整原因",
+      "type": "string",
+      "keywords": ["调整原因", "原因"],
+      "aggregatable": false
+    },
+    "v0015": {
+      "display_name": "00:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["00:15", "0点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0030": {
+      "display_name": "00:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["00:30", "0点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0045": {
+      "display_name": "00:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["00:45", "0点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0100": {
+      "display_name": "01:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["01:00", "1点", "1点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0115": {
+      "display_name": "01:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["01:15", "1点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0130": {
+      "display_name": "01:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["01:30", "1点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0145": {
+      "display_name": "01:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["01:45", "1点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0200": {
+      "display_name": "02:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["02:00", "2点", "2点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0215": {
+      "display_name": "02:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["02:15", "2点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0230": {
+      "display_name": "02:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["02:30", "2点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0245": {
+      "display_name": "02:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["02:45", "2点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0300": {
+      "display_name": "03:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["03:00", "3点", "3点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0315": {
+      "display_name": "03:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["03:15", "3点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0330": {
+      "display_name": "03:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["03:30", "3点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0345": {
+      "display_name": "03:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["03:45", "3点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0400": {
+      "display_name": "04:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["04:00", "4点", "4点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0415": {
+      "display_name": "04:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["04:15", "4点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0430": {
+      "display_name": "04:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["04:30", "4点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0445": {
+      "display_name": "04:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["04:45", "4点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0500": {
+      "display_name": "05:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["05:00", "5点", "5点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0515": {
+      "display_name": "05:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["05:15", "5点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0530": {
+      "display_name": "05:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["05:30", "5点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0545": {
+      "display_name": "05:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["05:45", "5点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0600": {
+      "display_name": "06:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["06:00", "6点", "6点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0615": {
+      "display_name": "06:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["06:15", "6点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0630": {
+      "display_name": "06:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["06:30", "6点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0645": {
+      "display_name": "06:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["06:45", "6点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0700": {
+      "display_name": "07:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["07:00", "7点", "7点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0715": {
+      "display_name": "07:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["07:15", "7点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0730": {
+      "display_name": "07:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["07:30", "7点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0745": {
+      "display_name": "07:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["07:45", "7点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0800": {
+      "display_name": "08:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["08:00", "8点", "8点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0815": {
+      "display_name": "08:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["08:15", "8点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0830": {
+      "display_name": "08:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["08:30", "8点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0845": {
+      "display_name": "08:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["08:45", "8点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0900": {
+      "display_name": "09:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["09:00", "9点", "9点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0915": {
+      "display_name": "09:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["09:15", "9点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0930": {
+      "display_name": "09:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["09:30", "9点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v0945": {
+      "display_name": "09:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["09:45", "9点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1000": {
+      "display_name": "10:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["10:00", "10点", "10点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1015": {
+      "display_name": "10:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["10:15", "10点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1030": {
+      "display_name": "10:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["10:30", "10点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1045": {
+      "display_name": "10:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["10:45", "10点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1100": {
+      "display_name": "11:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["11:00", "11点", "11点整"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1115": {
+      "display_name": "11:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["11:15", "11点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1130": {
+      "display_name": "11:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["11:30", "11点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1145": {
+      "display_name": "11:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["11:45", "11点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1200": {
+      "display_name": "12:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["12:00", "12点", "中午12点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1215": {
+      "display_name": "12:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["12:15", "12点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1230": {
+      "display_name": "12:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["12:30", "12点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1245": {
+      "display_name": "12:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["12:45", "12点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1300": {
+      "display_name": "13:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["13:00", "13点", "下午1点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1315": {
+      "display_name": "13:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["13:15", "13点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1330": {
+      "display_name": "13:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["13:30", "13点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1345": {
+      "display_name": "13:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["13:45", "13点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1400": {
+      "display_name": "14:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["14:00", "14点", "下午2点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1415": {
+      "display_name": "14:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["14:15", "14点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1430": {
+      "display_name": "14:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["14:30", "14点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1445": {
+      "display_name": "14:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["14:45", "14点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1500": {
+      "display_name": "15:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["15:00", "15点", "下午3点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1515": {
+      "display_name": "15:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["15:15", "15点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1530": {
+      "display_name": "15:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["15:30", "15点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1545": {
+      "display_name": "15:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["15:45", "15点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1600": {
+      "display_name": "16:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["16:00", "16点", "下午4点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1615": {
+      "display_name": "16:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["16:15", "16点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1630": {
+      "display_name": "16:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["16:30", "16点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1645": {
+      "display_name": "16:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["16:45", "16点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1700": {
+      "display_name": "17:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["17:00", "17点", "下午5点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1715": {
+      "display_name": "17:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["17:15", "17点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1730": {
+      "display_name": "17:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["17:30", "17点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1745": {
+      "display_name": "17:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["17:45", "17点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1800": {
+      "display_name": "18:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["18:00", "18点", "下午6点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1815": {
+      "display_name": "18:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["18:15", "18点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1830": {
+      "display_name": "18:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["18:30", "18点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1845": {
+      "display_name": "18:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["18:45", "18点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1900": {
+      "display_name": "19:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["19:00", "19点", "晚上7点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1915": {
+      "display_name": "19:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["19:15", "19点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1930": {
+      "display_name": "19:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["19:30", "19点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v1945": {
+      "display_name": "19:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["19:45", "19点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2000": {
+      "display_name": "20:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["20:00", "20点", "晚上8点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2015": {
+      "display_name": "20:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["20:15", "20点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2030": {
+      "display_name": "20:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["20:30", "20点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2045": {
+      "display_name": "20:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["20:45", "20点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2100": {
+      "display_name": "21:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["21:00", "21点", "晚上9点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2115": {
+      "display_name": "21:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["21:15", "21点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2130": {
+      "display_name": "21:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["21:30", "21点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2145": {
+      "display_name": "21:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["21:45", "21点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2200": {
+      "display_name": "22:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["22:00", "22点", "晚上10点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2215": {
+      "display_name": "22:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["22:15", "22点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2230": {
+      "display_name": "22:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["22:30", "22点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2245": {
+      "display_name": "22:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["22:45", "22点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2300": {
+      "display_name": "23:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["23:00", "23点", "23点整", "晚上11点"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2315": {
+      "display_name": "23:15",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["23:15", "23点15分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2330": {
+      "display_name": "23:30",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["23:30", "23点30分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2345": {
+      "display_name": "23:45",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["23:45", "23点45分"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    },
+    "v2400": {
+      "display_name": "24:00",
+      "type": "number",
+      "unit": "MWh",
+      "keywords": ["24:00", "0点", "0点整", "午夜", "凌晨"],
+      "aggregatable": true,
+      "default_agg_op": "sum",
+      "is_time_point": true
+    }
+  }
+}

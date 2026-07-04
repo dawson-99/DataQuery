@@ -1,0 +1,69 @@
+{
+  "description": "字段模糊匹配配置 - 定义哪些字段需要模糊查询，以及匹配规则",
+  "fuzzy_fields": {
+    "transmission": {
+      "voltageName": {
+        "enabled": true,
+        "match_type": "contains",
+        "description": "电压等级 - 数据库存储为 ±800kV、±500kV 等标准格式，用户输入数字时应该匹配。注意：用户输入的数字（如 800）应该被识别为 voltage_name，而不是 line_name。",
+        "examples": [
+          {"user_input": "800", "db_value": "±800kV", "should_match": true, "note": "数字 800 是电压等级"},
+          {"user_input": "500", "db_value": "±500kV", "should_match": true, "note": "数字 500 是电压等级"},
+          {"user_input": "220", "db_value": "±220kV", "should_match": true, "note": "数字 220 是电压等级"},
+          {"user_input": "800kV", "db_value": "±800kV", "should_match": true, "note": "完整的电压等级表示"}
+        ]
+      },
+      "name": {
+        "enabled": true,
+        "match_type": "contains",
+        "description": "联络线名称 - 支持模糊匹配。包括线路类型（直流/交流）、地理位置、线路代码等。重要：'直流''交流'等线路类型词是 line_name 的一部分，不是 voltage_name。",
+        "examples": [
+          {"user_input": "直流", "db_value": "青豫直流线路", "should_match": true, "note": "直流是线路类型，属于 line_name"},
+          {"user_input": "青豫直流", "db_value": "青豫直流线路", "should_match": true, "note": "完整的线路名称"},
+          {"user_input": "交流", "db_value": "华北-华东交流线", "should_match": true, "note": "交流是线路类型，属于 line_name"},
+          {"user_input": "华北", "db_value": "华北-华东交流线", "should_match": true, "note": "地理位置信息"},
+          {"user_input": "宜昌", "db_value": "宜昌背靠背直流", "should_match": true, "note": "线路名称的一部分"}
+        ]
+      }
+    },
+    "transaction": {
+      "tradeseqId": {
+        "enabled": true,
+        "match_type": "exact",
+        "description": "交易序列ID - 精确匹配，ID字段不应模糊匹配"
+      },
+      "tradeseqCaption": {
+        "enabled": true,
+        "match_type": "contains",
+        "description": "交易名称 - 支持模糊匹配"
+      },
+      "summaryWord": {
+        "enabled": true,
+        "match_type": "contains",
+        "description": "成交结果概况 - 支持模糊匹配"
+      }
+    },
+    "power_company": {
+      "membersName": {
+        "enabled": true,
+        "match_type": "contains",
+        "description": "企业名称 - 支持模糊匹配，用户输入部分名称即可匹配",
+        "examples": [
+          {"user_input": "内蒙古长城", "db_value": "内蒙古长城发电有限公司", "should_match": true},
+          {"user_input": "长江电力", "db_value": "中国长江电力股份有限公司", "should_match": true}
+        ]
+      }
+    }
+  },
+  "match_types": {
+    "exact": "精确匹配 - 完全相等",
+    "prefix": "前缀匹配 - 用于日期等字段",
+    "contains": "包含匹配 - 用于名称、描述等字段",
+    "numeric_fuzzy": "数值模糊匹配 - 提取数值后比较"
+  },
+  "global_rules": {
+    "enable_numeric_extraction": true,
+    "description": "对于字符串字段，先尝试提取数值进行比较（如 ±800kV 提取 800）"
+  }
+}
+
