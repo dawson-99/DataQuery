@@ -1,0 +1,58 @@
+{
+  "tools": {
+    "extract_table_data": {
+      "name": "表格数据提取",
+      "description": "从 Markdown 格式表格中精确提取指定行列的数值。用于规则以表格形式呈现（如各地区电价上限表）时，替代 LLM 直接读表避免看错行列。",
+      "triggers": ["表格", "下表", "如下表", "价格表", "上限表"],
+      "parameters": {
+        "table_text": "Markdown 格式的完整表格文本",
+        "filter_column": "用于定位目标行的列名",
+        "filter_value": "用于定位目标行的值（支持模糊匹配）",
+        "select_column": "要提取数值的列名"
+      },
+      "output": {"value": "number", "unit": "string", "row_number": "int"}
+    },
+    "arithmetic_compare": {
+      "name": "精确算术比较",
+      "description": "对实际值与规则阈值进行精确比较。规则审查的核心判断——\"800 > 760 吗？\"由代码计算而非 LLM 推理，保证 100% 准确。",
+      "triggers": ["比较", "对比", "是否超过", "是否低于", "大于", "小于", "等于", "介于"],
+      "parameters": {
+        "actual": "实际值（数值，必须先通过 unit_converter 统一单位）",
+        "operator": "比较运算符：gt(大于) / gte(大于等于) / lt(小于) / lte(小于等于) / eq(等于) / neq(不等于) / between(介于两端之间)",
+        "threshold": "阈值",
+        "threshold_high": "上限（仅 between 时需要）"
+      },
+      "output": {"result": "boolean", "expression": "string", "detail": "string"}
+    },
+    "resolve_cross_reference": {
+      "name": "规则交叉引用解析",
+      "description": "解析规则文本中的交叉引用（如'参照第5条第2款'、'按照《XXX》第三章执行'），在被引位置找到对应的规则原文。",
+      "triggers": ["参照", "按照", "依据", "按照...执行", "第X条", "详见"],
+      "parameters": {
+        "reference_text": "包含交叉引用语句的文本片段"
+      },
+      "output": {"references": "array", "each": {"type": "string", "pattern": "string", "resolved_text": "string", "source": "string"}}
+    },
+    "validate_date_applicability": {
+      "name": "规则时效性校验",
+      "description": "判断某条规则在给定日期是否有效。检查规则的施行日期和废止日期，防止用旧规则判断新交易。",
+      "triggers": ["施行", "废止", "有效期", "生效", "失效", "版本"],
+      "parameters": {
+        "rule_text": "包含日期信息的规则文本",
+        "query_date": "查询日期，格式 YYYY-MM-DD"
+      },
+      "output": {"is_applicable": "boolean", "effective_date": "string", "expiry_date": "string|null", "version": "string", "reason": "string"}
+    },
+    "unit_converter": {
+      "name": "单位转换",
+      "description": "电力交易单位换算。用户说的值和规则写的值单位可能不同（如万kWh vs MWh），转换后统一比较。",
+      "triggers": ["万kWh", "亿kWh", "GWh", "kWh", "分/kWh", "元/千度"],
+      "parameters": {
+        "value": "待转换的数值",
+        "from_unit": "原单位",
+        "to_unit": "目标单位"
+      },
+      "output": {"value": "number", "unit": "string"}
+    }
+  }
+}

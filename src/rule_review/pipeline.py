@@ -354,19 +354,35 @@ class RuleReviewPipeline:
             yield self._sse_done(query_id)
             return
 
-        # ---- 阶段 6：Tool 调用 [Phase 2] ----
-        # Phase 1 跳过
-
-        # ---- 阶段 7：Judge 校验 ----
+        # ---- 阶段 6：Tool 调用 ----
         final_output = llm_output
 
+        if llm_output.tool_calls:
+            yield self._sse_label("工具调用中...", "tool")
+            try:
+                from src.rule_review.tool_executor import execute_with_tool_loop
+
+                tool_result, tool_logs = await execute_with_tool_loop(
+                    self.generator, rewritten_query, context_chunks
+                )
+                if tool_result is not None:
+                    final_output = LLMOutput(**tool_result) if isinstance(tool_result, dict) else tool_result
+                if tool_result and tool_result.get("tool_unsolved"):
+                    yield self._sse_label("工具未完成，降级为直接推理...", "tool_fallback")
+            except Exception as e:
+                logger.warning("[pipeline] Tool 阶段异常: %s", e)
+
+        # ---- 阶段 7：Judge 校验 ----
         if self.judge is not None:
             yield self._sse_label("结果校验中...", "judge")
             try:
                 from src.rule_review.judge import verify_with_fallback
 
+                # 使用 tool 阶段后的 final_output 进行校验
                 judged = await verify_with_fallback(
-                    self.judge, llm_output, rewritten_query, context_chunks
+                    self.judge,
+                    final_output if isinstance(final_output, LLMOutput) else llm_output,
+                    rewritten_query, context_chunks,
                 )
                 if judged.get("judge_skipped"):
                     yield self._sse_label(
@@ -488,13 +504,31 @@ class RuleReviewPipeline:
             "confidence": llm_output.confidence,
         })
 
+        # ---- 阶段 6：Tool 调用 ----
+        final_llm_output = llm_output
+        tool_logs = []
+        if llm_output.tool_calls:
+            from src.rule_review.tool_executor import execute_with_tool_loop
+
+            tool_result, tool_logs = await execute_with_tool_loop(
+                self.generator, rewritten_query, context_chunks
+            )
+            if tool_result is not None:
+                final_llm_output = LLMOutput(**tool_result) if isinstance(tool_result, dict) else tool_result
+            stages_log.append({
+                "stage": "tool",
+                "rounds": len(set(t.get("round", 0) for t in tool_logs)),
+                "tool_calls": len(tool_logs),
+                "tool_unsolved": tool_result.get("tool_unsolved", False) if tool_result else True,
+            })
+
         # ---- 阶段 7：Judge 校验 ----
-        final_result = llm_output.model_dump()
+        final_result = final_llm_output.model_dump()
         if self.judge is not None:
             from src.rule_review.judge import verify_with_fallback
 
             judged = await verify_with_fallback(
-                self.judge, llm_output, rewritten_query, context_chunks
+                self.judge, final_llm_output, rewritten_query, context_chunks
             )
             final_result = judged
             stages_log.append({

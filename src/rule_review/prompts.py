@@ -51,8 +51,43 @@ def _build_terms_section() -> str:
 TERMS_SECTION = _build_terms_section()
 
 
+def _build_tools_section() -> str:
+    """从 tools_config.json 动态生成工具规则文本。
+
+    与现有 _build_operations_section() 模式一致：
+    JSON 配置文件 → 动态生成规则文本 → 嵌入 System Prompt。
+    """
+    try:
+        with open("data/env_variables/tools_config.json", "r", encoding="utf-8") as f:
+            tools_config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return "## 可用工具\n\n（工具配置未加载）\n"
+
+    tools = tools_config.get("tools", {})
+    if not tools:
+        return "## 可用工具\n\n（无可用工具）\n"
+
+    lines = ["## 可用工具\n"]
+    lines.append("当遇到以下场景时，在输出的 `tool_calls` 数组中添加相应的工具调用：\n")
+    for tool_name, tool_info in tools.items():
+        lines.append(f"### {tool_name}（{tool_info['name']}）")
+        triggers = "、".join(f'"{t}"' for t in tool_info.get("triggers", []))
+        lines.append(f"- 触发词：{triggers}")
+        lines.append(f"- 说明：{tool_info['description']}")
+        lines.append(f"- 参数：")
+        for param_name, param_desc in tool_info["parameters"].items():
+            lines.append(f"  - `{param_name}`: {param_desc}")
+        lines.append(f"- 返回值：{json.dumps(tool_info['output'], ensure_ascii=False)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# 预生成工具规则文本
+TOOLS_SECTION = _build_tools_section()
+
+
 # ---------------------------------------------------------------------------
-# System Prompt (Phase 1)
+# System Prompt (Phase 2)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """你是电力交易规则审查专家。当前日期为 {current_date}。
@@ -96,9 +131,65 @@ SYSTEM_PROMPT = """你是电力交易规则审查专家。当前日期为 {curre
 ## 额外说明
 - `not_found` 字段仅在文档中完全找不到相关信息时设为 true
 - evidence 中的 text 必须是原文引用（尽量逐字引用），不要改写或总结
-- reason 需要说明你是如何从原文推导出结论的
-- 如果用户问题中提到的名称在规则文档中的正式名称不同，请注明并解释
-- 每条 evidence 需标注来源文档名、章节、页码""".format(
+- reason 需要说明你是如何从原文推导出结论的"""
+
+
+# Phase 2 System Prompt: 含 tool_calls 支持
+SYSTEM_PROMPT_V2 = SYSTEM_PROMPT + """
+
+## 工具调用规则
+遇到以下场景时必须调用工具，不要自行估算：
+
+{tools_section}
+
+### tool_calls 数组格式
+```json
+"tool_calls": [
+  {{
+    "tool": "工具名",
+    "args": {{参数对象}}
+  }}
+]
+```
+
+### 工具调用示例
+假设用户问"冀北电价800元/MWh是否超出上限"，规则文档中的表格为：
+| 地区 | 电价上限(元/MWh) |
+|------|-----------------|
+| 冀北 | 760             |
+
+则应输出：
+```json
+{{
+  "decision": "",
+  "reason": "",
+  "evidence": [],
+  "confidence": 0.0,
+  "tool_calls": [
+    {{"tool": "extract_table_data", "args": {{"table_text": "| 地区 | 电价上限(元/MWh) |\\\\n|------|-----------------|\\\\n| 冀北 | 760 |", "filter_column": "地区", "filter_value": "冀北", "select_column": "电价上限(元/MWh)"}}}},
+    {{"tool": "arithmetic_compare", "args": {{"actual": 800, "operator": "gt", "threshold": 760}}}}
+  ]
+}}
+```
+
+系统执行工具后，会将结果追加返回，请基于工具结果重新生成完整的审查结果（此时 tool_calls 为空数组）。
+
+## 核心原则（补充）
+4. 所有精确计算（数值比较、单位换算、表格提取）必须调用工具完成，不得自行估算"""
+
+
+def get_system_prompt(include_tools: bool = True) -> str:
+    """获取 System Prompt，Phase 2 默认包含工具规则。
+
+    Args:
+        include_tools: True 时返回含工具规则的 V2 Prompt。
+
+    Returns:
+        系统提示词字符串。
+    """
+    if include_tools:
+        return SYSTEM_PROMPT_V2.format(tools_section=TOOLS_SECTION)
+    return SYSTEM_PROMPT.format(
     current_date=_current_date,
 )
 

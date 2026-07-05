@@ -137,8 +137,10 @@ class TestSystemPrompt:
 
     def test_system_prompt_includes_current_date(self):
         from datetime import datetime
+        from src.rule_review.prompts import get_system_prompt
         today = datetime.now().strftime("%Y-%m-%d")
-        assert today in SYSTEM_PROMPT
+        prompt = get_system_prompt(include_tools=False)
+        assert today in prompt
 
 
 class TestTermsSection:

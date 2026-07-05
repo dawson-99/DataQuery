@@ -17,6 +17,7 @@ from src.rule_review.judge import RuleReviewJudge, get_default_judge
 from src.rule_review.pipeline import RuleReviewPipeline, get_default_pipeline
 from src.rule_review.query_rewriter import QueryRewriter, get_default_rewriter
 from src.rule_review.retriever import HybridRetriever, get_default_retriever
+from src.rule_review.tool_executor import ToolExecutor, execute_with_tool_loop
 
 __all__ = [
     "QueryRewriter",
@@ -30,6 +31,8 @@ __all__ = [
     "get_default_judge",
     "RuleReviewPipeline",
     "get_default_pipeline",
+    "ToolExecutor",
+    "execute_with_tool_loop",
     "__version__",
 ]
 
