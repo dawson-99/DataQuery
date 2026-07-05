@@ -10,8 +10,9 @@ from src.config import settings
 
 __version__ = "0.1.0"
 
-# 暴露问题改写器、文档存储与混合检索器，便于 pipeline 与测试使用
+# 暴露问题改写器、文档存储、混合检索器与 LLM 推理器，便于 pipeline 与测试使用
 from src.rule_review.document_store import DocumentStore
+from src.rule_review.generator import RuleReviewGenerator, get_default_generator
 from src.rule_review.query_rewriter import QueryRewriter, get_default_rewriter
 from src.rule_review.retriever import HybridRetriever, get_default_retriever
 
@@ -21,6 +22,8 @@ __all__ = [
     "DocumentStore",
     "HybridRetriever",
     "get_default_retriever",
+    "RuleReviewGenerator",
+    "get_default_generator",
     "__version__",
 ]
 

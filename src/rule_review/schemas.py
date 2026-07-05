@@ -12,11 +12,11 @@ from pydantic import BaseModel, Field
 class EvidenceItem(BaseModel):
     """审查结论引用的单条规则证据"""
 
-    source: str = Field(description="文档名称")
-    section: str = Field(description="章节标题")
-    page: int = Field(description="页码", ge=1)
-    text: str = Field(description="原文引用")
-    chunk_id: str = Field(description="来源 chunk ID")
+    source: str = Field(default="", description="文档名称")
+    section: str = Field(default="", description="章节标题")
+    page: int = Field(default=0, description="页码", ge=0)
+    text: str = Field(default="", description="原文引用")
+    chunk_id: str = Field(default="", description="来源 chunk ID")
 
 
 class RuleReviewRequest(BaseModel):
