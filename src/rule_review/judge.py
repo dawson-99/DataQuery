@@ -389,9 +389,16 @@ async def verify_with_fallback(
         result["judge_skipped_reason"] = "not_found"
         return result
 
-    judge_result = await judge.verify(
-        llm_output, original_query, context_chunks, tool_logs
-    )
+    try:
+        judge_result = await judge.verify(
+            llm_output, original_query, context_chunks, tool_logs
+        )
+    except Exception as e:
+        logger.warning("[Judge] verify 异常，跳过校验: %s", e)
+        result = llm_output.model_dump()
+        result["judge_skipped"] = True
+        result["judge_skipped_reason"] = str(e)[:200]
+        return result
 
     if judge_result.judge_skipped:
         logger.warning(

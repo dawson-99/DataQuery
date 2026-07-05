@@ -218,7 +218,7 @@ def mock_components():
         fused_hits=2,
     )
 
-    async def _mock_retrieve(*args, **kwargs):
+    def _mock_retrieve(*args, **kwargs):
         return mock_result
 
     retriever.retrieve_with_fallback = _mock_retrieve
@@ -312,7 +312,7 @@ class TestRuleReviewPipelineStream:
 
         empty_result = RetrieveResult(not_found=True)
 
-        async def _mock_empty(*args, **kwargs):
+        def _mock_empty(*args, **kwargs):
             return empty_result
 
         retriever.retrieve_with_fallback = _mock_empty
@@ -439,7 +439,7 @@ class TestRuleReviewPipelineExecute:
     async def test_execute_empty_retrieval(self, mock_components):
         rewriter, doc_store, retriever, generator, _ = mock_components
 
-        async def _mock_empty(*args, **kwargs):
+        def _mock_empty(*args, **kwargs):
             return RetrieveResult(not_found=True)
 
         retriever.retrieve_with_fallback = _mock_empty
@@ -557,10 +557,25 @@ class TestConvenienceMethods:
 
 class TestDefaultPipeline:
     def test_get_default_pipeline(self):
-        p1 = get_default_pipeline()
-        p2 = get_default_pipeline()
-        assert p1 is p2
-        assert isinstance(p1, RuleReviewPipeline)
+        """验证 get_default_pipeline 单例行为（patch 避免触发 sentence_transformers）。"""
+        import src.rule_review.pipeline as pmod
+
+        old = pmod._default_pipeline
+        pmod._default_pipeline = None
+
+        # 构造带 embedding_fn 的 mock DocumentStore
+        mock_store = MagicMock(spec=DocumentStore)
+        mock_store.embedding_fn = lambda texts: __import__("numpy").array([])
+        mock_store._chunks = {}
+        mock_store.list_documents.return_value = []
+
+        with patch.object(pmod, "DocumentStore", return_value=mock_store):
+            p1 = get_default_pipeline()
+            p2 = get_default_pipeline()
+            assert p1 is p2
+            assert isinstance(p1, RuleReviewPipeline)
+
+        pmod._default_pipeline = old
 
 
 # ---------------------------------------------------------------------------

@@ -210,8 +210,8 @@ class RuleReviewPipeline:
 
     按设计文档 §13 的 9 阶段工作流编排执行，覆盖所有分支场景。
 
-    Phase 1: 阶段 0-5 + 阶段 8（不含 Tool 和 Judge）
-    Phase 2: 增加阶段 6（Tool）+ 阶段 7（Judge）
+    Phase 1: 阶段 0-5 + 阶段 7（Judge）+ 阶段 8（SSE 输出）
+    Phase 2: 增加阶段 6（Tool 调用循环）
     """
 
     def __init__(
@@ -220,6 +220,7 @@ class RuleReviewPipeline:
         document_store: DocumentStore | None = None,
         retriever: HybridRetriever | None = None,
         generator: RuleReviewGenerator | None = None,
+        judge: Any | None = None,  # RuleReviewJudge，Phase 1 可选
     ) -> None:
         """
         Args:
@@ -227,11 +228,13 @@ class RuleReviewPipeline:
             document_store: 文档存储实例，None 时自动创建。
             retriever: 混合检索器，None 时自动创建（依赖 document_store）。
             generator: LLM 推理器，None 时自动创建。
+            judge: Judge 校验器，None 时跳过校验阶段。
         """
         self.rewriter = rewriter or QueryRewriter()
         self.doc_store = document_store or DocumentStore()
         self.retriever = retriever or HybridRetriever(document_store=self.doc_store)
         self.generator = generator or RuleReviewGenerator()
+        self.judge = judge  # None → 跳过 Judge 阶段
 
     # ------------------------------------------------------------------
     # 全流程：生成器方法
@@ -281,9 +284,10 @@ class RuleReviewPipeline:
         yield self._sse_label("检索相关知识中...", "retrieval")
 
         if is_multi_doc:
-            # 多文档：并发检索
+            # 多文档：并行检索（retrieve_with_fallback 是同步方法）
             retrieve_tasks = [
-                self.retriever.retrieve_with_fallback(
+                asyncio.to_thread(
+                    self.retriever.retrieve_with_fallback,
                     item["sub_query"],
                     top_k=request.top_k,
                     doc_filter=item.get("doc_id"),
@@ -295,7 +299,7 @@ class RuleReviewPipeline:
                 all_retrieve_results, top_k=request.top_k
             )
         else:
-            retrieve_result = await self.retriever.retrieve_with_fallback(
+            retrieve_result = self.retriever.retrieve_with_fallback(
                 rewritten_query, top_k=request.top_k
             )
 
@@ -351,17 +355,42 @@ class RuleReviewPipeline:
             return
 
         # ---- 阶段 6：Tool 调用 [Phase 2] ----
-        # Phase 1 跳过，直接进入最终输出
+        # Phase 1 跳过
 
-        # ---- 阶段 7：Judge 校验 [Phase 2] ----
-        # Phase 1 跳过，直接输出 LLM 结果
+        # ---- 阶段 7：Judge 校验 ----
+        final_output = llm_output
+
+        if self.judge is not None:
+            yield self._sse_label("结果校验中...", "judge")
+            try:
+                from src.rule_review.judge import verify_with_fallback
+
+                judged = await verify_with_fallback(
+                    self.judge, llm_output, rewritten_query, context_chunks
+                )
+                if judged.get("judge_skipped"):
+                    yield self._sse_label(
+                        f"校验跳过: {judged.get('judge_skipped_reason', '')}...",
+                        "judge_skipped",
+                    )
+                final_output = judged
+            except Exception as e:
+                logger.warning("[pipeline] Judge 阶段异常: %s", e)
+                yield self._sse_label("校验服务繁忙，已跳过校验...", "judge_skipped")
 
         # ---- 阶段 8：SSE 最终输出 ----
         yield self._sse_label("生成结果中...", "result")
-        yield self._sse_content(
-            llm_output.model_dump_json(),
-            event="content",
-        )
+
+        if isinstance(final_output, dict):
+            yield self._sse_content(
+                json.dumps(final_output, ensure_ascii=False),
+                event="content",
+            )
+        else:
+            yield self._sse_content(
+                final_output.model_dump_json(),
+                event="content",
+            )
 
         elapsed = time.monotonic() - stage_start
         logger.info("[pipeline] 完成，耗时 %.2fs, query_id=%s", elapsed, query_id)
@@ -403,7 +432,8 @@ class RuleReviewPipeline:
         # 阶段 3+4: 检索
         if is_multi_doc:
             retrieve_tasks = [
-                self.retriever.retrieve_with_fallback(
+                asyncio.to_thread(
+                    self.retriever.retrieve_with_fallback,
                     item["sub_query"],
                     top_k=request.top_k,
                     doc_filter=item.get("doc_id"),
@@ -413,7 +443,7 @@ class RuleReviewPipeline:
             all_retrieve_results = await asyncio.gather(*retrieve_tasks)
             retrieve_result = self._merge_retrieve_results(all_retrieve_results, top_k=request.top_k)
         else:
-            retrieve_result = await self.retriever.retrieve_with_fallback(
+            retrieve_result = self.retriever.retrieve_with_fallback(
                 rewritten_query, top_k=request.top_k
             )
 
@@ -458,10 +488,25 @@ class RuleReviewPipeline:
             "confidence": llm_output.confidence,
         })
 
+        # ---- 阶段 7：Judge 校验 ----
+        final_result = llm_output.model_dump()
+        if self.judge is not None:
+            from src.rule_review.judge import verify_with_fallback
+
+            judged = await verify_with_fallback(
+                self.judge, llm_output, rewritten_query, context_chunks
+            )
+            final_result = judged
+            stages_log.append({
+                "stage": "judge",
+                "skipped": judged.get("judge_skipped", False),
+                "verified": judged.get("judge_verified", False),
+            })
+
         return {
             "query_id": query_id,
             "rewritten_query": rewritten_query,
-            "result": llm_output.model_dump(),
+            "result": final_result,
             "stages": stages_log,
         }
 
