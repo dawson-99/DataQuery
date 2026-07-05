@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# 数据目录（运行时 volume 挂载，不打包到镜像）
+data/rule_documents/
+data/rule_index/
+
+# 日志
+logs/
+*.log
+
+# 测试与缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__snapshots__/
+
+# 文档
+docs/
+*.md
+!requirements.txt
+
+# 其他
+.DS_Store
+.env.example

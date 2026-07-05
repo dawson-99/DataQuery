@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: data-query
+    ports:
+      - "6066:6066"
+    env_file:
+      - .env
+    volumes:
+      # 持久化数据目录（规则文档 + FAISS 索引）
+      - ./data/rule_documents:/app/data/rule_documents
+      - ./data/rule_index:/app/data/rule_index
+      - ./logs:/app/logs
+    restart: unless-stopped
+    # 单机模式，1 worker 即可
+    environment:
+      - UVICORN_WORKERS=1
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6066/v1/rule-review/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # 资源限制（bge-m3 + FAISS + FastAPI 建议 8GB+）
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 4G
+
+  # Phase 3 可选的 Redis 缓存
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: data-query-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+
+# volumes:
+#   redis_data:
