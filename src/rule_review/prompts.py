@@ -188,10 +188,11 @@ def get_system_prompt(include_tools: bool = True) -> str:
         系统提示词字符串。
     """
     if include_tools:
-        return SYSTEM_PROMPT_V2.format(tools_section=TOOLS_SECTION)
-    return SYSTEM_PROMPT.format(
-    current_date=_current_date,
-)
+        return SYSTEM_PROMPT_V2.format(
+            current_date=_current_date,
+            tools_section=TOOLS_SECTION,
+        )
+    return SYSTEM_PROMPT.format(current_date=_current_date)
 
 
 # ---------------------------------------------------------------------------

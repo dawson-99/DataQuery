@@ -16,7 +16,11 @@ from src.rule_review.generator import RuleReviewGenerator, get_default_generator
 from src.rule_review.judge import RuleReviewJudge, get_default_judge
 from src.rule_review.pipeline import RuleReviewPipeline, get_default_pipeline
 from src.rule_review.query_rewriter import QueryRewriter, get_default_rewriter
-from src.rule_review.retriever import HybridRetriever, get_default_retriever
+from src.rule_review.retriever import (
+    HybridRetriever,
+    SparseRetriever,
+    get_default_retriever,
+)
 from src.rule_review.tool_executor import ToolExecutor, execute_with_tool_loop
 
 __all__ = [
@@ -24,6 +28,7 @@ __all__ = [
     "get_default_rewriter",
     "DocumentStore",
     "HybridRetriever",
+    "SparseRetriever",
     "get_default_retriever",
     "RuleReviewGenerator",
     "get_default_generator",

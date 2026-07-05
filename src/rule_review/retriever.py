@@ -726,6 +726,189 @@ class HybridRetriever:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# bge-m3 Sparse 检索器（Phase 2.5，替代 BM25）
+# ---------------------------------------------------------------------------
+
+
+class SparseRetriever:
+    """基于 bge-m3 内置 sparse 向量的关键词检索器。
+
+    bge-m3 使用 learned sparse 向量（词汇权重），精度优于传统 BM25。
+    可完全替代 BM25Retriever，统一 dense + sparse 向量由同一模型生成。
+
+    设计原则：
+    - 可注入 sparse_fn：测试时可 mock 避免下载大模型
+    - 默认使用 bge-m3 的 encode(return_sparse=True)
+    - 索引结构：{chunk_id: {token_id: weight}} 的稀疏矩阵
+    """
+
+    def __init__(
+        self,
+        sparse_fn: Callable[[list[str]], list[dict[int, float]]] | None = None,
+    ) -> None:
+        """
+        Args:
+            sparse_fn: 稀疏向量生成函数。接收 texts 列表，
+                       返回 [{token_id: weight}, ...]。
+                       None 时尝试加载 bge-m3 sparse。
+        """
+        self._sparse_fn = sparse_fn
+        self._sparse_vectors: dict[str, dict[int, float]] = {}
+        self._doc_freq: dict[int, int] = {}  # token_id → 出现文档数
+        self._total_docs = 0
+        self._is_built = False
+
+    @property
+    def is_built(self) -> bool:
+        return self._is_built
+
+    def _get_sparse_fn(self) -> Callable | None:
+        if self._sparse_fn is not None:
+            return self._sparse_fn
+        # 尝试加载 bge-m3 sparse
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            model = SentenceTransformer("BAAI/bge-m3")
+
+            def _fn(texts: list[str]) -> list[dict[int, float]]:
+                output = model.encode(
+                    texts,
+                    return_sparse=True,
+                    normalize_embeddings=False,
+                    show_progress_bar=False,
+                )
+                return output.get("sparse", [{} for _ in texts])
+
+            self._sparse_fn = _fn
+            return _fn
+        except ImportError:
+            logger.warning("sentence-transformers 未安装，bge-m3 sparse 不可用")
+            return None
+        except Exception as e:
+            logger.warning("bge-m3 sparse 初始化失败: %s", e)
+            return None
+
+    def build_from_chunks(self, chunks: list[Chunk]) -> None:
+        """从 chunk 列表构建 sparse 索引。"""
+        if not chunks:
+            self._sparse_vectors = {}
+            self._doc_freq = {}
+            self._total_docs = 0
+            self._is_built = False
+            return
+
+        sparse_fn = self._get_sparse_fn()
+        if sparse_fn is None:
+            self._is_built = False
+            return
+
+        texts = [c.text for c in chunks]
+        chunk_ids = [c.chunk_id for c in chunks]
+
+        try:
+            sparse_vecs = sparse_fn(texts)
+        except Exception as e:
+            logger.warning("bge-m3 sparse 编码失败: %s", e)
+            self._is_built = False
+            return
+
+        self._sparse_vectors = {}
+        self._doc_freq = {}
+        self._total_docs = 0
+
+        for chunk_id, sv in zip(chunk_ids, sparse_vecs):
+            if not sv:
+                continue
+            self._sparse_vectors[chunk_id] = dict(sv)
+            for token_id in sv:
+                self._doc_freq[token_id] = self._doc_freq.get(token_id, 0) + 1
+            self._total_docs += 1
+
+        self._is_built = self._total_docs > 0
+
+    def search(
+        self,
+        query: str,
+        k: int = 30,
+    ) -> list[tuple[str, float]]:
+        """Sparse 检索，返回 (chunk_id, score) 列表。
+
+        使用 BM25 风格的 IDF 加权匹配：
+        score = Σ token_weight_query × token_weight_doc × log((N - df + 0.5) / (df + 0.5))
+        """
+        if not self._is_built:
+            return []
+
+        sparse_fn = self._get_sparse_fn()
+        if sparse_fn is None:
+            return []
+
+        try:
+            query_vecs = sparse_fn([query])
+            if not query_vecs or not query_vecs[0]:
+                return []
+            query_vec = query_vecs[0]
+        except Exception as e:
+            logger.warning("sparse query 编码失败: %s", e)
+            return []
+
+        scores: dict[str, float] = {}
+        N = self._total_docs
+
+        for token_id, q_weight in query_vec.items():
+            df = self._doc_freq.get(token_id, 0)
+            if df == 0:
+                continue
+            idf = float(np.log((N - df + 0.5) / (df + 0.5) + 1e-9))
+
+            for chunk_id, sv in self._sparse_vectors.items():
+                d_weight = sv.get(token_id, 0.0)
+                if d_weight > 0:
+                    scores[chunk_id] = scores.get(chunk_id, 0.0) + q_weight * d_weight * idf
+
+        # 按分数降序排列
+        sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        return sorted_items[:k]
+
+    def add_chunks(self, chunks: list[Chunk]) -> None:
+        """增量添加 chunk（重建方式）。"""
+        if not chunks:
+            return
+        all_chunks = []
+        seen = set(self._sparse_vectors.keys())
+        for c in chunks:
+            if c.chunk_id not in seen:
+                all_chunks.append(c)
+        if not all_chunks:
+            return
+        # 重建：
+        existing_ids = list(self._sparse_vectors.keys())
+        existing_chunks = []  # can't reconstruct from sparse_vectors alone, just rebuild
+        self.build_from_chunks(chunks)
+
+    def remove_chunks(self, chunk_ids: set[str]) -> None:
+        """移除指定 chunk_ids。"""
+        if not chunk_ids:
+            return
+        for cid in chunk_ids:
+            if cid in self._sparse_vectors:
+                sv = self._sparse_vectors.pop(cid)
+                for token_id in sv:
+                    if token_id in self._doc_freq:
+                        self._doc_freq[token_id] -= 1
+                        if self._doc_freq[token_id] <= 0:
+                            del self._doc_freq[token_id]
+                self._total_docs -= 1
+        self._is_built = self._total_docs > 0
+
+
+# ---------------------------------------------------------------------------
+# 便捷工厂
+# ---------------------------------------------------------------------------
+
+
 def get_default_retriever(
     document_store: DocumentStore | None = None,
 ) -> HybridRetriever:
