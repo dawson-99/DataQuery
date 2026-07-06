@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.rule_review.audit import AuditStore, get_default_audit_store
 from src.rule_review.document_store import DocumentStore
 from src.rule_review.pipeline import RuleReviewPipeline, get_default_pipeline
 from src.rule_review.schemas import DocumentUploadResponse, RuleReviewRequest
@@ -246,3 +247,109 @@ async def health_check() -> JSONResponse:
             },
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# 审计追溯接口（设计文档 §4.7）
+# ---------------------------------------------------------------------------
+
+_audit_store: Optional[AuditStore] = None
+
+
+def _get_audit_store() -> AuditStore:
+    global _audit_store
+    if _audit_store is None:
+        _audit_store = get_default_audit_store()
+    return _audit_store
+
+
+@router.get("/audit/{query_id}", summary="获取审查审计记录")
+async def get_audit_record(
+    query_id: str,
+    date: str = Query(default="", description="审查日期 YYYY-MM-DD，留空则自动搜索"),
+) -> JSONResponse:
+    """获取指定审查的完整审计记录（含溯源链）。
+
+    合规人员可以查看某次审查的完整决策过程，包括：
+    - 检索阶段详情
+    - LLM 推理详情
+    - 工具调用日志
+    - Judge 校验详情
+    - 每条 evidence 到原始文档的溯源链
+    """
+    store = _get_audit_store()
+    record = store.load(query_id, date=date if date else None)
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"审计记录未找到: query_id={query_id}" + (f", date={date}" if date else ""),
+        )
+
+    return JSONResponse(content={
+        "status": "success",
+        "data": record.model_dump(),
+    })
+
+
+@router.get("/audit/sample/{date}", summary="抽样质检")
+async def sample_for_quality_check(
+    date: str,
+    count: int = Query(default=10, ge=1, le=100, description="抽样数量"),
+) -> JSONResponse:
+    """抽样用于质检——合规部门每日随机抽样核查。
+
+    从指定日期的所有审查记录中随机抽取指定数量，
+    返回完整的审计记录列表供人工复核。
+    """
+    store = _get_audit_store()
+    records = store.sample_for_review(date, count=count)
+
+    return JSONResponse(content={
+        "status": "success",
+        "data": {
+            "date": date,
+            "sampled_count": len(records),
+            "records": [r.model_dump() for r in records],
+        },
+    })
+
+
+@router.get("/audit/stats", summary="审计统计")
+async def get_audit_stats(
+    start_date: str = Query(description="起始日期 YYYY-MM-DD"),
+    end_date: str = Query(description="结束日期 YYYY-MM-DD"),
+) -> JSONResponse:
+    """获取审计统计信息：审查次数、幻觉率、跳过率、置信度等。
+
+    用于合规部门监控系统运行质量。
+    """
+    store = _get_audit_store()
+    stats = store.get_stats(start_date, end_date)
+
+    return JSONResponse(content={
+        "status": "success",
+        "data": stats,
+    })
+
+
+@router.delete("/audit/{query_id}", summary="删除审计记录")
+async def delete_audit_record(
+    query_id: str,
+    date: str = Query(description="审查日期 YYYY-MM-DD"),
+) -> JSONResponse:
+    """删除指定审计记录。"""
+    store = _get_audit_store()
+    success = store.delete(query_id, date)
+
+    if not success:
+        raise HTTPException(
+            status_code=404,
+            detail=f"审计记录未找到: query_id={query_id}, date={date}",
+        )
+
+    return JSONResponse(content={
+        "status": "success",
+        "deleted": True,
+        "query_id": query_id,
+    })

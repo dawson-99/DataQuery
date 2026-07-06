@@ -11,6 +11,7 @@ from src.config import settings
 __version__ = "0.1.0"
 
 # 暴露核心模块，便于 pipeline 与测试使用
+from src.rule_review.audit import AuditStore, build_source_traceability, get_default_audit_store
 from src.rule_review.document_store import DocumentStore
 from src.rule_review.generator import RuleReviewGenerator, get_default_generator
 from src.rule_review.judge import RuleReviewJudge, get_default_judge
@@ -38,6 +39,9 @@ __all__ = [
     "get_default_pipeline",
     "ToolExecutor",
     "execute_with_tool_loop",
+    "AuditStore",
+    "build_source_traceability",
+    "get_default_audit_store",
     "__version__",
 ]
 

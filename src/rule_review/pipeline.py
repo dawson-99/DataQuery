@@ -19,16 +19,22 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
+from src.rule_review.audit import AuditStore, build_source_traceability
 from src.rule_review.document_store import DocumentStore
 from src.rule_review.generator import RuleReviewGenerator, parse_llm_output
 from src.rule_review.query_rewriter import QueryRewriter
 from src.rule_review.retriever import HybridRetriever, RetrieveResult
 from src.rule_review.schemas import (
+    AuditRecord,
     ClarificationResponse,
+    JudgeAudit,
+    LLMGenerationAudit,
     LLMOutput,
     NotFoundResponse,
+    RetrievalAudit,
     RuleReviewRequest,
     RuleReviewResult,
 )
@@ -221,6 +227,7 @@ class RuleReviewPipeline:
         retriever: HybridRetriever | None = None,
         generator: RuleReviewGenerator | None = None,
         judge: Any | None = None,  # RuleReviewJudge，Phase 1 可选
+        audit_store: AuditStore | None = None,  # 审计存储，None 时不记录
     ) -> None:
         """
         Args:
@@ -229,12 +236,14 @@ class RuleReviewPipeline:
             retriever: 混合检索器，None 时自动创建（依赖 document_store）。
             generator: LLM 推理器，None 时自动创建。
             judge: Judge 校验器，None 时跳过校验阶段。
+            audit_store: 审计存储，None 时不记录审计日志。
         """
         self.rewriter = rewriter or QueryRewriter()
         self.doc_store = document_store or DocumentStore()
         self.retriever = retriever or HybridRetriever(document_store=self.doc_store)
         self.generator = generator or RuleReviewGenerator()
         self.judge = judge  # None → 跳过 Judge 阶段
+        self.audit_store = audit_store  # None → 不记录审计
 
     # ------------------------------------------------------------------
     # 全流程：生成器方法
@@ -282,6 +291,7 @@ class RuleReviewPipeline:
 
         # ---- 阶段 3 + 4：Query 优化 + RAG 检索 ----
         yield self._sse_label("检索相关知识中...", "retrieval")
+        retrieval_start = time.monotonic()
 
         if is_multi_doc:
             # 多文档：并行检索（retrieve_with_fallback 是同步方法）
@@ -303,6 +313,9 @@ class RuleReviewPipeline:
                 rewritten_query, top_k=request.top_k
             )
 
+        retrieval_end = time.monotonic()
+        retrieval_latency_ms = (retrieval_end - retrieval_start) * 1000
+
         # ---- 空检索兜底 ----
         if retrieve_result.not_found and not retrieve_result.results:
             logger.info("[pipeline] 检索无结果，返回 not_found")
@@ -318,6 +331,7 @@ class RuleReviewPipeline:
 
         # ---- 阶段 5：LLM 生成 ----
         yield self._sse_label("规则推理中...", "generation")
+        generation_start = time.monotonic()
 
         # 将检索结果转为 prompt 所需的格式
         context_chunks = self._chunks_to_dict_list(retrieve_result.results)
@@ -325,6 +339,9 @@ class RuleReviewPipeline:
             query=rewritten_query,
             context_chunks=context_chunks,
         )
+
+        generation_end = time.monotonic()
+        generation_latency_ms = (generation_end - generation_start) * 1000
 
         if llm_output is None:
             # LLM 生成失败
@@ -373,8 +390,10 @@ class RuleReviewPipeline:
                 logger.warning("[pipeline] Tool 阶段异常: %s", e)
 
         # ---- 阶段 7：Judge 校验 ----
+        judge_audit = JudgeAudit(skipped=True, skipped_reason="no_judge_configured")
         if self.judge is not None:
             yield self._sse_label("结果校验中...", "judge")
+            judge_start = time.monotonic()
             try:
                 from src.rule_review.judge import verify_with_fallback
 
@@ -389,10 +408,23 @@ class RuleReviewPipeline:
                         f"校验跳过: {judged.get('judge_skipped_reason', '')}...",
                         "judge_skipped",
                     )
+                    judge_audit = JudgeAudit(
+                        skipped=True,
+                        skipped_reason=judged.get("judge_skipped_reason", "unknown"),
+                        latency_ms=(time.monotonic() - judge_start) * 1000,
+                    )
+                else:
+                    judge_audit = JudgeAudit(
+                        verified=judged.get("verified", False),
+                        hallucinated_count=len(judged.get("hallucinated_evidence", [])),
+                        skipped=False,
+                        latency_ms=(time.monotonic() - judge_start) * 1000,
+                    )
                 final_output = judged
             except Exception as e:
                 logger.warning("[pipeline] Judge 阶段异常: %s", e)
                 yield self._sse_label("校验服务繁忙，已跳过校验...", "judge_skipped")
+                judge_audit = JudgeAudit(skipped=True, skipped_reason=str(e))
 
         # ---- 阶段 8：SSE 最终输出 ----
         yield self._sse_label("生成结果中...", "result")
@@ -410,6 +442,38 @@ class RuleReviewPipeline:
 
         elapsed = time.monotonic() - stage_start
         logger.info("[pipeline] 完成，耗时 %.2fs, query_id=%s", elapsed, query_id)
+
+        # ---- 构建并保存审计记录 ----
+        if self.audit_store is not None:
+            try:
+                # 构建溯源链
+                final_dict = final_output if isinstance(final_output, dict) else final_output.model_dump()
+                source_traces = build_source_traceability(final_dict, context_chunks)
+
+                audit_record = AuditRecord(
+                    query_id=query_id,
+                    timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    original_query=request.question,
+                    rewritten_query=rewritten_query,
+                    retrieval=RetrievalAudit(
+                        bm25_k=retrieve_result.bm25_hits,
+                        vector_k=retrieve_result.vector_hits,
+                        final_k=len(retrieve_result.results),
+                        search_expanded=retrieve_result.search_expanded,
+                        retrieval_latency_ms=round(retrieval_latency_ms, 2),
+                    ),
+                    llm_generation=LLMGenerationAudit(
+                        not_found=llm_output.not_found,
+                        latency_ms=round(generation_latency_ms, 2),
+                    ),
+                    judge_verification=judge_audit,
+                    final_result=final_dict,
+                    source_traceability=source_traces,
+                )
+                self.audit_store.save(audit_record)
+            except Exception as e:
+                logger.warning("[pipeline] 审计记录保存失败: %s", e)
+
         yield self._sse_done(query_id)
 
     async def execute(
@@ -536,6 +600,45 @@ class RuleReviewPipeline:
                 "skipped": judged.get("judge_skipped", False),
                 "verified": judged.get("judge_verified", False),
             })
+
+        # ---- 构建并保存审计记录 ----
+        if self.audit_store is not None:
+            try:
+                context_chunks = self._chunks_to_dict_list(retrieve_result.results)
+                source_traces = build_source_traceability(final_result, context_chunks)
+
+                audit_record = AuditRecord(
+                    query_id=query_id,
+                    timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    original_query=request.question,
+                    rewritten_query=rewritten_query,
+                    retrieval=RetrievalAudit(
+                        bm25_k=retrieve_result.bm25_hits,
+                        vector_k=retrieve_result.vector_hits,
+                        final_k=len(retrieve_result.results),
+                        search_expanded=retrieve_result.search_expanded,
+                    ),
+                    llm_generation=LLMGenerationAudit(
+                        not_found=llm_output.not_found,
+                    ),
+                    tool_executions=[
+                        ToolCallLog(
+                            query_id=query_id,
+                            round=t.get("round", 1),
+                            tool_name=t.get("tool_name", t.get("tool", "")),
+                            args=t.get("args", {}),
+                            result=t.get("result", {}),
+                            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            latency_ms=t.get("latency_ms", 0),
+                        )
+                        for t in tool_logs
+                    ],
+                    final_result=final_result,
+                    source_traceability=source_traces,
+                )
+                self.audit_store.save(audit_record)
+            except Exception as e:
+                logger.warning("[pipeline] 审计记录保存失败: %s", e)
 
         return {
             "query_id": query_id,

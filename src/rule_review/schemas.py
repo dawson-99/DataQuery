@@ -95,3 +95,86 @@ class NotFoundResponse(BaseModel):
     evidence: list[EvidenceItem] = Field(default_factory=list)
     confidence: float = 0.0
     not_found: bool = True
+
+
+# ---------------------------------------------------------------------------
+# 审计追溯模型（设计文档 §4.7）
+# ---------------------------------------------------------------------------
+
+
+class RetrievalAudit(BaseModel):
+    """检索阶段审计信息"""
+
+    bm25_k: int = Field(default=0, description="BM25 召回数量")
+    vector_k: int = Field(default=0, description="向量召回数量")
+    sparse_k: int = Field(default=0, description="bge-m3 sparse 召回数量")
+    fusion_method: str = Field(default="RRF", description="融合方法")
+    final_k: int = Field(default=0, description="最终送入 LLM 的 chunk 数")
+    search_expanded: bool = Field(default=False, description="是否触发了扩大搜索兜底")
+    retrieval_latency_ms: float = Field(default=0.0, description="检索耗时（毫秒）")
+
+
+class LLMGenerationAudit(BaseModel):
+    """LLM 推理阶段审计信息"""
+
+    model: str = Field(default="", description="使用的模型")
+    tok_input: int = Field(default=0, description="输入 token 数")
+    tok_output: int = Field(default=0, description="输出 token 数")
+    latency_ms: float = Field(default=0.0, description="推理耗时（毫秒）")
+    not_found: bool = Field(default=False, description="是否判定'文档中无相关规则'")
+
+
+class JudgeAudit(BaseModel):
+    """Judge 校验阶段审计信息"""
+
+    model: str = Field(default="", description="使用的模型")
+    verified: bool = Field(default=False, description="校验是否通过")
+    hallucinated_count: int = Field(default=0, description="检测到的幻觉数")
+    skipped: bool = Field(default=False, description="是否跳过了校验")
+    skipped_reason: str = Field(default="", description="跳过原因")
+    latency_ms: float = Field(default=0.0, description="校验耗时（毫秒）")
+
+
+class SourceTrace(BaseModel):
+    """单条溯源信息：答案中的某段结论 → 原始文档位置"""
+
+    result_field: str = Field(default="", description="对应结果的哪个字段")
+    result_excerpt: str = Field(default="", description="结果中的原文片段")
+    source_doc: str = Field(default="", description="来源于哪个文档")
+    source_section: str = Field(default="", description="来源于哪个章节")
+    source_page: int = Field(default=0, description="来源于哪一页")
+    source_text: str = Field(default="", description="原始文档中的原文")
+    source_chunk_id: str = Field(default="", description="来源于哪个 chunk")
+    match_type: str = Field(
+        default="llm_extracted",
+        description="匹配类型：exact | fuzzy | llm_extracted",
+    )
+
+
+class AuditRecord(BaseModel):
+    """单次审查的完整审计记录"""
+
+    query_id: str = Field(description="审查唯一标识")
+    timestamp: str = Field(description="审查时间")
+
+    # 用户输入
+    original_query: str = Field(default="", description="原始问题")
+    rewritten_query: str = Field(default="", description="改写后问题")
+
+    # 检索过程
+    retrieval: RetrievalAudit = Field(default_factory=RetrievalAudit)
+
+    # LLM 推理过程
+    llm_generation: LLMGenerationAudit = Field(default_factory=LLMGenerationAudit)
+
+    # Tool 调用过程
+    tool_executions: list[ToolCallLog] = Field(default_factory=list)
+
+    # Judge 校验过程
+    judge_verification: JudgeAudit | None = Field(default=None)
+
+    # 最终输出
+    final_result: dict = Field(default_factory=dict)
+
+    # 溯源信息
+    source_traceability: list[SourceTrace] = Field(default_factory=list)
