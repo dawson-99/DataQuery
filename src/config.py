@@ -154,6 +154,18 @@ class Settings:
         self.VLLM_MODEL_NAME: str = os.getenv("VLLM_MODEL_NAME", "")
         self.VLLM_API_KEY: str = os.getenv("VLLM_API_KEY", "not-needed")
 
+        # ====== Milvus 向量数据库配置（Phase 4）======
+        self.MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
+        self.MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", "19530"))
+        self.MILVUS_COLLECTION: str = os.getenv("MILVUS_COLLECTION", "rule_documents")
+
+        # ====== PostgreSQL 数据库配置（Phase 4）======
+        self.PG_HOST: str = os.getenv("PG_HOST", "localhost")
+        self.PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
+        self.PG_USER: str = os.getenv("PG_USER", "dataquery")
+        self.PG_PASSWORD: str = os.getenv("PG_PASSWORD", "dataquery")
+        self.PG_DATABASE: str = os.getenv("PG_DATABASE", "rule_review")
+
         # 模型请求中转服务配置
         self.GATEWAY_BASE_URL = os.getenv("GATEWAY_BASE_URL", "")
         # 走中转服务的模型名称列表（由环境变量逗号分隔）

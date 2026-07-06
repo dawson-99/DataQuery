@@ -25,6 +25,13 @@ from src.rule_review.evaluation import (
 from src.rule_review.generator import RuleReviewGenerator, get_default_generator
 from src.rule_review.judge import RuleReviewJudge, get_default_judge
 from src.rule_review.local_model import VLLMClient, get_default_vllm_client
+from src.rule_review.milvus_store import (
+    MilvusChunk,
+    MilvusClient,
+    MilvusSearchResult,
+    get_default_milvus,
+)
+from src.rule_review.pg_store import PostgresPool, PostgresStore, get_default_pg_store
 from src.rule_review.pipeline import RuleReviewPipeline, get_default_pipeline
 from src.rule_review.query_rewriter import QueryRewriter, get_default_rewriter
 from src.rule_review.retriever import (
@@ -70,6 +77,13 @@ __all__ = [
     "compute_decision_accuracy",
     "detect_hallucination",
     "get_default_eval_runner",
+    "MilvusClient",
+    "MilvusChunk",
+    "MilvusSearchResult",
+    "get_default_milvus",
+    "PostgresPool",
+    "PostgresStore",
+    "get_default_pg_store",
     "__version__",
 ]
 
