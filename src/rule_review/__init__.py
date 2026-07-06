@@ -12,9 +12,19 @@ __version__ = "0.1.0"
 
 # 暴露核心模块，便于 pipeline 与测试使用
 from src.rule_review.audit import AuditStore, build_source_traceability, get_default_audit_store
+from src.rule_review.cache import DualModeCache, get_default_cache
 from src.rule_review.document_store import DocumentStore
+from src.rule_review.evaluation import (
+    EvalReport,
+    EvalRunner,
+    TestCaseManager,
+    compute_decision_accuracy,
+    detect_hallucination,
+    get_default_eval_runner,
+)
 from src.rule_review.generator import RuleReviewGenerator, get_default_generator
 from src.rule_review.judge import RuleReviewJudge, get_default_judge
+from src.rule_review.local_model import VLLMClient, get_default_vllm_client
 from src.rule_review.pipeline import RuleReviewPipeline, get_default_pipeline
 from src.rule_review.query_rewriter import QueryRewriter, get_default_rewriter
 from src.rule_review.retriever import (
@@ -50,6 +60,16 @@ __all__ = [
     "ToolSandbox",
     "execute_with_timeout",
     "get_default_tool_sandbox",
+    "DualModeCache",
+    "get_default_cache",
+    "VLLMClient",
+    "get_default_vllm_client",
+    "EvalRunner",
+    "EvalReport",
+    "TestCaseManager",
+    "compute_decision_accuracy",
+    "detect_hallucination",
+    "get_default_eval_runner",
     "__version__",
 ]
 

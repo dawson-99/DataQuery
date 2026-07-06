@@ -144,6 +144,16 @@ class Settings:
         self.RULE_DOCUMENTS_DIR: str = os.getenv("RULE_DOCUMENTS_DIR", "data/rule_documents")
         self.RULE_INDEX_DIR: str = os.getenv("RULE_INDEX_DIR", "data/rule_index")
 
+        # ====== Redis 缓存配置（Phase 3）======
+        self.REDIS_URL: str = os.getenv("REDIS_URL", "")
+        self.REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "300"))
+        self.REDIS_RETRIEVAL_TTL: int = int(os.getenv("REDIS_RETRIEVAL_TTL", "600"))
+
+        # ====== vLLM 本地模型配置（Phase 3）======
+        self.VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "")
+        self.VLLM_MODEL_NAME: str = os.getenv("VLLM_MODEL_NAME", "")
+        self.VLLM_API_KEY: str = os.getenv("VLLM_API_KEY", "not-needed")
+
         # 模型请求中转服务配置
         self.GATEWAY_BASE_URL = os.getenv("GATEWAY_BASE_URL", "")
         # 走中转服务的模型名称列表（由环境变量逗号分隔）

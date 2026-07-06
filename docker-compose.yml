@@ -14,33 +14,46 @@ services:
       - ./data/rule_index:/app/data/rule_index
       - ./logs:/app/logs
     restart: unless-stopped
-    # 单机模式，1 worker 即可
     environment:
       - UVICORN_WORKERS=1
-    # 健康检查
+      - REDIS_URL=redis://redis:6379/0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6066/v1/rule-review/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
-    # 资源限制（bge-m3 + FAISS + FastAPI 建议 8GB+）
     deploy:
       resources:
         limits:
           memory: 16G
         reservations:
           memory: 4G
+    depends_on:
+      redis:
+        condition: service_healthy
 
-  # Phase 3 可选的 Redis 缓存
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: data-query-redis
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis_data:/data
-  #   restart: unless-stopped
+  # Redis 缓存（Phase 3）
+  redis:
+    image: redis:7-alpine
+    container_name: data-query-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
 
-# volumes:
-#   redis_data:
+volumes:
+  redis_data:
