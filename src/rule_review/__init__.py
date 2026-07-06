@@ -22,6 +22,11 @@ from src.rule_review.retriever import (
     SparseRetriever,
     get_default_retriever,
 )
+from src.rule_review.sandbox_utils import (
+    ToolSandbox,
+    execute_with_timeout,
+    get_default_tool_sandbox,
+)
 from src.rule_review.tool_executor import ToolExecutor, execute_with_tool_loop
 
 __all__ = [
@@ -42,6 +47,9 @@ __all__ = [
     "AuditStore",
     "build_source_traceability",
     "get_default_audit_store",
+    "ToolSandbox",
+    "execute_with_timeout",
+    "get_default_tool_sandbox",
     "__version__",
 ]
 
