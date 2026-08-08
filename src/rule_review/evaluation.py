@@ -54,6 +54,8 @@ class TestCase:
     documents: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     difficulty: str = "medium"  # easy | medium | hard
+    # 期望命中的 chunk_id（内容哈希后可精确标注；当前检索指标用 expected_keywords 代理）
+    expected_chunk_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -73,8 +75,13 @@ class EvalMetrics:
     sources_found: list[str] = field(default_factory=list)
     sources_missed: list[str] = field(default_factory=list)
 
+    # 检索层指标：recall@k 与 MRR（相关性代理：chunk 文本含任一期望关键词）
+    recall_at_k: float = 0.0
+    mrr: float = 0.0
+
     has_hallucination: bool = False  # 是否检测到幻觉
     hallucinated_text: list[str] = field(default_factory=list)
+    hallucination_check_skipped: bool = False  # 无检索文本时跳过幻觉检测
 
     confidence: float = 0.0
     latency_ms: float = 0.0
@@ -105,6 +112,10 @@ class EvalReport:
 
     # 幻觉率
     hallucination_rate: float = 0.0
+
+    # 检索层指标（平均值）
+    avg_recall_at_k: float = 0.0
+    avg_mrr: float = 0.0
 
     # 平均置信度
     avg_confidence: float = 0.0
@@ -159,6 +170,7 @@ class TestCaseManager:
                     documents=item.get("documents", []),
                     tags=item.get("tags", []),
                     difficulty=item.get("difficulty", "medium"),
+                    expected_chunk_ids=item.get("expected_chunk_ids", []),
                 ))
             except KeyError as e:
                 logger.warning("[Eval] 跳过无效用例 %s: 缺少字段 %s", item.get("id", "?"), e)
@@ -180,6 +192,7 @@ class TestCaseManager:
                 "documents": tc.documents,
                 "tags": tc.tags,
                 "difficulty": tc.difficulty,
+                "expected_chunk_ids": tc.expected_chunk_ids,
             })
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,6 +294,62 @@ def compute_source_recall(
     missed = [es for es in expected_sources if es not in found]
     recall = len(found) / len(expected_sources) if expected_sources else 1.0
     return recall, found, missed
+
+
+def compute_recall_at_k(
+    retrieved_chunks: list[dict],
+    expected_keywords: list[str],
+    k: int | None = None,
+) -> float:
+    """计算检索层 recall@k（单 query 场景为 0/1，报告层取平均即为召回率）。
+
+    相关性代理：chunk 文本包含任一期望关键词即视为命中。
+    当前 chunk_id 为随机生成无法预标注，故用关键词代理；
+    内容哈希 chunk 后可改用 expected_chunk_ids 精确标注。
+
+    Args:
+        retrieved_chunks: [{"text": ..., ...}, ...] 检索结果（按相关性排序）。
+        expected_keywords: 期望命中的关键词列表。
+        k: 只考虑前 k 个结果；None 时取全部。
+
+    Returns:
+        1.0（前 k 个中至少一个命中）或 0.0。
+    """
+    if not expected_keywords or not retrieved_chunks:
+        return 0.0
+
+    top = retrieved_chunks if k is None else retrieved_chunks[:k]
+    for chunk in top:
+        if any(kw in chunk.get("text", "") for kw in expected_keywords):
+            return 1.0
+    return 0.0
+
+
+def compute_mrr(
+    retrieved_chunks: list[dict],
+    expected_keywords: list[str],
+    k: int | None = None,
+) -> float:
+    """计算检索层 MRR（Mean Reciprocal Rank）。
+
+    取第一个命中 chunk 的倒数排名；全部未命中返回 0。
+
+    Args:
+        retrieved_chunks: [{"text": ..., ...}, ...] 检索结果（按相关性排序）。
+        expected_keywords: 期望命中的关键词列表。
+        k: 只考虑前 k 个结果；None 时取全部。
+
+    Returns:
+        mrr 值（0.0 ~ 1.0）。
+    """
+    if not expected_keywords:
+        return 0.0
+
+    top = retrieved_chunks if k is None else retrieved_chunks[:k]
+    for rank, chunk in enumerate(top, start=1):
+        if any(kw in chunk.get("text", "") for kw in expected_keywords):
+            return 1.0 / rank
+    return 0.0
 
 
 def detect_hallucination(
@@ -402,12 +471,13 @@ class EvalRunner:
                 evidence_sources = [e.get("source", "") for e in evidence]
                 reason = actual.get("reason", "")
 
-                # 检索到的文本（用于幻觉检测）
-                retrieved_texts = []
+                # 检索到的文本（用于幻觉检测与 recall@k/MRR 计算）
+                retrieved_chunks = []
                 for s in stages:
                     if s.get("stage") == "retrieval":
-                        # stages 中没有 chunks 详情，从 pipeline 输出推断
-                        pass
+                        retrieved_chunks = s.get("retrieved_chunks", []) or []
+                        break
+                retrieved_texts = [c.get("text", "") for c in retrieved_chunks]
 
                 kw_recall, kw_found, kw_missed = compute_keyword_recall(
                     reason, evidence_texts, tc.expected_keywords
@@ -415,9 +485,21 @@ class EvalRunner:
                 src_recall, src_found, src_missed = compute_source_recall(
                     evidence_sources, tc.expected_evidence_sources
                 )
-                has_hallu, hallu_texts = detect_hallucination(
-                    evidence_texts, retrieved_texts
+
+                # 检索结果为空（旧版 stages 无 retrieved_chunks 或检索失败）时跳过
+                # 幻觉检测——否则空集合会把所有 evidence 判为幻觉，指标失真
+                hallucination_check_skipped = not retrieved_texts
+                if hallucination_check_skipped:
+                    has_hallu, hallu_texts = False, []
+                else:
+                    has_hallu, hallu_texts = detect_hallucination(
+                        evidence_texts, retrieved_texts
+                    )
+
+                recall_at_k = compute_recall_at_k(
+                    retrieved_chunks, tc.expected_keywords, k=top_k
                 )
+                mrr = compute_mrr(retrieved_chunks, tc.expected_keywords, k=top_k)
 
                 metrics = EvalMetrics(
                     case_id=tc.id,
@@ -432,8 +514,11 @@ class EvalRunner:
                     evidence_source_recall=round(src_recall, 4),
                     sources_found=src_found,
                     sources_missed=src_missed,
+                    recall_at_k=recall_at_k,
+                    mrr=round(mrr, 4),
                     has_hallucination=has_hallu,
                     hallucinated_text=hallu_texts,
+                    hallucination_check_skipped=hallucination_check_skipped,
                     confidence=actual.get("confidence", 0),
                     latency_ms=round(elapsed, 2),
                     not_found=actual.get("not_found", False),
@@ -495,6 +580,10 @@ class EvalRunner:
         hallu_count = sum(1 for m in valid if m.has_hallucination)
         hallu_rate = hallu_count / n
 
+        # 检索层指标（平均值）
+        avg_recall = sum(m.recall_at_k for m in valid) / n
+        avg_mrr = sum(m.mrr for m in valid) / n
+
         # 平均置信度
         avg_conf = sum(m.confidence for m in valid) / n
 
@@ -538,6 +627,8 @@ class EvalRunner:
             avg_keyword_recall=round(avg_kw, 4),
             avg_source_recall=round(avg_src, 4),
             hallucination_rate=round(hallu_rate, 4),
+            avg_recall_at_k=round(avg_recall, 4),
+            avg_mrr=round(avg_mrr, 4),
             avg_confidence=round(avg_conf, 4),
             avg_latency_ms=round(avg_lat, 2),
             by_difficulty=by_diff,
@@ -583,6 +674,8 @@ class EvalRunner:
             avg_keyword_recall=data.get("avg_keyword_recall", 0),
             avg_source_recall=data.get("avg_source_recall", 0),
             hallucination_rate=data.get("hallucination_rate", 0),
+            avg_recall_at_k=data.get("avg_recall_at_k", 0),
+            avg_mrr=data.get("avg_mrr", 0),
             avg_confidence=data.get("avg_confidence", 0),
             avg_latency_ms=data.get("avg_latency_ms", 0),
             by_difficulty=data.get("by_difficulty", {}),

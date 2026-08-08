@@ -532,6 +532,15 @@ class RuleReviewPipeline:
             "not_found": retrieve_result.not_found,
             "result_count": len(retrieve_result.results),
             "search_expanded": retrieve_result.search_expanded,
+            # 检索到的 chunk 明细（文本截断），供离线评估做幻觉检测与 recall@k/MRR 计算
+            "retrieved_chunks": [
+                {
+                    "chunk_id": getattr(getattr(r, "chunk", r), "chunk_id", ""),
+                    "source": getattr(getattr(r, "chunk", r), "source", "未知文档"),
+                    "text": getattr(getattr(r, "chunk", r), "text", "")[:200],
+                }
+                for r in retrieve_result.results
+            ],
         })
 
         # 空检索
