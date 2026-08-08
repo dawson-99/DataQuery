@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.rule_review.llm_judge_metrics import RagasMetrics, compute_ragas_metrics
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TEST_CASES_PATH = "data/evaluation/test_cases.json"
@@ -56,6 +58,8 @@ class TestCase:
     difficulty: str = "medium"  # easy | medium | hard
     # 期望命中的 chunk_id（内容哈希后可精确标注；当前检索指标用 expected_keywords 代理）
     expected_chunk_ids: list[str] = field(default_factory=list)
+    # RAGAS 指标参考答案（Context Precision/Recall 的判定基准；缺省时两指标降级为 None）
+    reference_answer: str = ""
 
 
 @dataclass
@@ -88,6 +92,15 @@ class EvalMetrics:
 
     not_found: bool = False  # 是否判定为未找到
     judge_skipped: bool = False
+
+    # RAGAS 风格 LLM-as-judge 指标（自研，见 llm_judge_metrics.py）
+    faithfulness: float | None = None
+    answer_relevancy: float | None = None
+    context_precision: float | None = None
+    context_recall: float | None = None
+    ragas_skipped: bool = False  # 整体跳过（如回答为空）
+    ragas_skip_reason: str = ""
+    ragas_details: dict = field(default_factory=dict)  # 各指标明细 + judge_latency_ms
 
     error: str = ""  # 执行中的异常
 
@@ -122,6 +135,13 @@ class EvalReport:
 
     # 平均延迟
     avg_latency_ms: float = 0.0
+
+    # RAGAS 指标均值（LLM-as-judge；全为 None 时返回 None，即未启用/全部降级）
+    avg_faithfulness: float | None = None
+    avg_answer_relevancy: float | None = None
+    avg_context_precision: float | None = None
+    avg_context_recall: float | None = None
+    ragas_metrics_count: int = 0  # 至少算出一个 RAGAS 指标的用例数
 
     # 按难度分组
     by_difficulty: dict[str, dict] = field(default_factory=dict)
@@ -171,6 +191,7 @@ class TestCaseManager:
                     tags=item.get("tags", []),
                     difficulty=item.get("difficulty", "medium"),
                     expected_chunk_ids=item.get("expected_chunk_ids", []),
+                    reference_answer=item.get("reference_answer", ""),
                 ))
             except KeyError as e:
                 logger.warning("[Eval] 跳过无效用例 %s: 缺少字段 %s", item.get("id", "?"), e)
@@ -193,6 +214,7 @@ class TestCaseManager:
                 "tags": tc.tags,
                 "difficulty": tc.difficulty,
                 "expected_chunk_ids": tc.expected_chunk_ids,
+                "reference_answer": tc.reference_answer,
             })
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -412,14 +434,26 @@ class EvalRunner:
     """批量评估运行器。
 
     对测试集中每条用例执行 pipeline，收集指标并生成报告。
+    支持 RAGAS 风格 LLM-as-judge 指标（llm_judge_metrics.py）：
+    - judge_model 可注入 mock/指定模型；None 时惰性使用默认评测模型
+    - LLM 不可用/输入缺失时指标置 None 并标记跳过，绝不阻断评估主流程
     """
 
-    def __init__(self, pipeline=None):
+    def __init__(
+        self,
+        pipeline=None,
+        judge_model: Any | None = None,
+        ragas_enabled: bool = True,
+    ):
         """
         Args:
             pipeline: RuleReviewPipeline 实例，None 时需要后续注入。
+            judge_model: RAGAS 指标使用的 LLM 模型实例；None 时使用默认评测模型。
+            ragas_enabled: 是否启用 LLM-as-judge 指标（关闭后行为与旧版一致）。
         """
         self._pipeline = pipeline
+        self._judge_model = judge_model
+        self._ragas_enabled = ragas_enabled
 
     def set_pipeline(self, pipeline) -> None:
         self._pipeline = pipeline
@@ -501,6 +535,35 @@ class EvalRunner:
                 )
                 mrr = compute_mrr(retrieved_chunks, tc.expected_keywords, k=top_k)
 
+                # RAGAS 风格 LLM-as-judge 指标（完整文本优先，缺失时回退截断版）
+                ragas = RagasMetrics(skipped=True, skip_reason="RAGAS 指标已关闭")
+                if self._ragas_enabled:
+                    full_chunks = []
+                    for s in stages:
+                        if s.get("stage") == "retrieval":
+                            full_chunks = (
+                                s.get("retrieved_chunks_full")
+                                or s.get("retrieved_chunks")
+                                or []
+                            )
+                            break
+                    answer_text = reason + " " + " ".join(evidence_texts)
+                    try:
+                        ragas = await compute_ragas_metrics(
+                            question=tc.question,
+                            answer_text=answer_text,
+                            context_chunks=full_chunks,
+                            reference_answer=tc.reference_answer,
+                            model=self._judge_model,
+                        )
+                    except Exception as e:
+                        logger.error("[Eval] %s RAGAS 指标计算异常: %s", tc.id, e)
+                        ragas = RagasMetrics(
+                            skipped=True,
+                            skip_reason=f"RAGAS 指标计算异常: {e}",
+                            errors=[str(e)],
+                        )
+
                 metrics = EvalMetrics(
                     case_id=tc.id,
                     decision_match=compute_decision_accuracy(
@@ -523,6 +586,13 @@ class EvalRunner:
                     latency_ms=round(elapsed, 2),
                     not_found=actual.get("not_found", False),
                     judge_skipped=actual.get("judge_skipped", False),
+                    faithfulness=ragas.faithfulness,
+                    answer_relevancy=ragas.answer_relevancy,
+                    context_precision=ragas.context_precision,
+                    context_recall=ragas.context_recall,
+                    ragas_skipped=ragas.skipped,
+                    ragas_skip_reason=ragas.skip_reason,
+                    ragas_details=ragas.details,
                 )
                 metrics_list.append(metrics)
                 success_count += 1
@@ -544,6 +614,14 @@ class EvalRunner:
             metrics_list, test_cases, success_count, error_count
         )
         return report
+
+    @staticmethod
+    def _avg_optional(values: list[float | None]) -> float | None:
+        """对可选值求平均（None 不计入；全为 None 返回 None）。"""
+        present = [v for v in values if v is not None]
+        if not present:
+            return None
+        return round(sum(present) / len(present), 4)
 
     def _build_report(
         self,
@@ -590,6 +668,17 @@ class EvalRunner:
         # 平均延迟
         avg_lat = sum(m.latency_ms for m in valid) / n
 
+        # RAGAS 指标均值（None 不计入；全部为 None 时返回 None）
+        ragas_faith = self._avg_optional([m.faithfulness for m in valid])
+        ragas_rel = self._avg_optional([m.answer_relevancy for m in valid])
+        ragas_prec = self._avg_optional([m.context_precision for m in valid])
+        ragas_recall = self._avg_optional([m.context_recall for m in valid])
+        ragas_count = sum(
+            1 for m in valid
+            if m.faithfulness is not None or m.answer_relevancy is not None
+            or m.context_precision is not None or m.context_recall is not None
+        )
+
         # 按难度分组
         by_diff: dict[str, dict] = {}
         case_map = {c.id: c for c in cases}
@@ -631,6 +720,11 @@ class EvalRunner:
             avg_mrr=round(avg_mrr, 4),
             avg_confidence=round(avg_conf, 4),
             avg_latency_ms=round(avg_lat, 2),
+            avg_faithfulness=ragas_faith,
+            avg_answer_relevancy=ragas_rel,
+            avg_context_precision=ragas_prec,
+            avg_context_recall=ragas_recall,
+            ragas_metrics_count=ragas_count,
             by_difficulty=by_diff,
             by_tag=by_tag,
             details=metrics,
@@ -678,6 +772,11 @@ class EvalRunner:
             avg_mrr=data.get("avg_mrr", 0),
             avg_confidence=data.get("avg_confidence", 0),
             avg_latency_ms=data.get("avg_latency_ms", 0),
+            avg_faithfulness=data.get("avg_faithfulness"),
+            avg_answer_relevancy=data.get("avg_answer_relevancy"),
+            avg_context_precision=data.get("avg_context_precision"),
+            avg_context_recall=data.get("avg_context_recall"),
+            ragas_metrics_count=data.get("ragas_metrics_count", 0),
             by_difficulty=data.get("by_difficulty", {}),
             by_tag=data.get("by_tag", {}),
             details=details,
@@ -697,3 +796,71 @@ def get_default_eval_runner() -> EvalRunner:
     if _default_eval_runner is None:
         _default_eval_runner = EvalRunner()
     return _default_eval_runner
+
+
+# ---------------------------------------------------------------------------
+# CLI 入口：一键离线评估
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    """离线评估 CLI。
+
+    用法:
+        python -m src.rule_review.evaluation [--cases PATH] [--top-k N]
+                                              [--report PATH] [--no-ragas]
+
+    RAGAS 指标默认开启；--no-ragas 关闭 LLM-as-judge 指标（行为与旧版一致）。
+    LLM 不可用时指标自动降级为 None 并统计跳过，不影响报告生成。
+    """
+    import argparse
+    import asyncio
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="规则审查系统离线评估（含 RAGAS 风格 LLM-as-judge 指标）"
+    )
+    parser.add_argument("--cases", default=DEFAULT_TEST_CASES_PATH, help="测试集 JSON 路径")
+    parser.add_argument("--top-k", type=int, default=10, help="送入 LLM 的 chunk 数")
+    parser.add_argument("--report", default=None, help="报告输出路径（默认 data/evaluation/reports/）")
+    parser.add_argument("--no-ragas", action="store_true", help="关闭 RAGAS LLM-as-judge 指标")
+    args = parser.parse_args(argv)
+
+    from src.rule_review.pipeline import get_default_pipeline
+
+    manager = TestCaseManager(args.cases)
+    cases = manager.load()
+    if not cases:
+        print("[Eval] 测试集为空或加载失败: %s", args.cases)
+        return 1
+
+    runner = EvalRunner(
+        pipeline=get_default_pipeline(),
+        ragas_enabled=not args.no_ragas,
+    )
+    report = asyncio.run(runner.run(cases, top_k=args.top_k))
+
+    path = EvalRunner.save_report(report, args.report)
+    print(f"\n[Eval] 报告已保存: {path}")
+    print(f"[Eval] 总用例 {report.total_cases} | 成功 {report.success_cases} | 失败 {report.error_cases}")
+    print(f"[Eval] 决策准确率 {report.decision_accuracy:.2%} | 关键词召回 {report.avg_keyword_recall:.2%}")
+    print(f"[Eval] 来源召回 {report.avg_source_recall:.2%} | 幻觉率 {report.hallucination_rate:.2%}")
+    print(f"[Eval] recall@k {report.avg_recall_at_k:.4f} | MRR {report.avg_mrr:.4f} | 延迟 {report.avg_latency_ms:.0f}ms")
+    if args.no_ragas:
+        print("[Eval] RAGAS 指标已关闭（--no-ragas）")
+    else:
+        print("[Eval] RAGAS 指标（LLM-as-judge，None=降级跳过）:")
+        print(f"  faithfulness      = {report.avg_faithfulness}")
+        print(f"  answer_relevancy  = {report.avg_answer_relevancy}")
+        print(f"  context_precision = {report.avg_context_precision}")
+        print(f"  context_recall    = {report.avg_context_recall}")
+        print(f"  (有效用例 {report.ragas_metrics_count}/{report.success_cases})")
+        skipped = [m for m in report.details if m.ragas_skipped and not m.error]
+        if skipped:
+            print(f"[Eval] 注意: {len(skipped)} 条用例 RAGAS 指标整体跳过（如回答为空）")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

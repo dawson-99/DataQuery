@@ -565,6 +565,18 @@ class RuleReviewPipeline:
                 }
                 for r in retrieve_result.results
             ],
+            # 完整 chunk 文本（不截断），供离线评估做 RAGAS 风格 LLM-judge 指标判分
+            "retrieved_chunks_full": [
+                {
+                    "chunk_id": getattr(c, "chunk_id", ""),
+                    "source": getattr(c, "source", "未知文档"),
+                    "section": getattr(c, "section", ""),
+                    "page": getattr(c, "page", 0),
+                    "text": getattr(c, "text", ""),
+                }
+                for r in retrieve_result.results
+                for c in [getattr(r, "chunk", r)]
+            ],
         })
 
         # 空检索
