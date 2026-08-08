@@ -7,7 +7,8 @@
     "expected_evidence_sources": ["省间电力现货交易规则"],
     "documents": ["省间电力现货交易规则.pdf"],
     "tags": ["价格上限", "冀北", "日前现货"],
-    "difficulty": "easy"
+    "difficulty": "easy",
+    "reference_answer": "省间日前现货出清电价上限为760元/MWh，2025年3月15日冀北日前现货出清电价800元/MWh超过上限，不符合价格上限规定。"
   },
   {
     "id": "tc-002",
@@ -17,7 +18,8 @@
     "expected_evidence_sources": ["省间电力现货交易规则"],
     "documents": ["省间电力现货交易规则.pdf"],
     "tags": ["价格上限", "冀北", "日前现货"],
-    "difficulty": "easy"
+    "difficulty": "easy",
+    "reference_answer": "省间日前现货出清电价上限为760元/MWh，2025年3月15日冀北日前现货出清电价500元/MWh未超过上限，符合价格上限规定。"
   },
   {
     "id": "tc-003",
@@ -27,7 +29,8 @@
     "expected_evidence_sources": ["省间电力现货交易规则"],
     "documents": ["省间电力现货交易规则.pdf"],
     "tags": ["申报上限", "冀北", "日内"],
-    "difficulty": "medium"
+    "difficulty": "medium",
+    "reference_answer": "省间电力现货交易规则规定日内申报电量不得超过申报上限的120%，2025年3月冀北申报日前现货电量8000MWh超过该上限，不符合申报规定。"
   },
   {
     "id": "tc-004",
@@ -117,7 +120,8 @@
     "expected_evidence_sources": ["省间电力现货交易规则"],
     "documents": ["省间电力现货交易规则.pdf"],
     "tags": ["价格上限", "山西"],
-    "difficulty": "easy"
+    "difficulty": "easy",
+    "reference_answer": "省间日前现货出清电价上限为760元/MWh，2025年3月15日山西日前现货出清电价400元/MWh未超过上限，符合价格上限规定。"
   },
   {
     "id": "tc-013",
@@ -137,6 +141,7 @@
     "expected_evidence_sources": ["省间电力现货交易规则", "电力市场监管办法"],
     "documents": ["省间电力现货交易规则.pdf", "电力市场监管办法.pdf"],
     "tags": ["多文档", "价格上限", "说明"],
-    "difficulty": "hard"
+    "difficulty": "hard",
+    "reference_answer": "省间日前现货出清电价上限为760元/MWh，2025年3月15日冀北日前现货申报电价1000元/MWh超过上限，不符合价格上限规定，且超限申报需提交书面说明。"
   }
 ]
