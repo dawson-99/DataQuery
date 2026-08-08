@@ -1,16 +1,16 @@
 # 规则审查子系统优化方向清单(面试素材 + 演进规划)
 
 > 用途:面试追问「这个项目还可以如何优化?添加哪些能力、功能、工具?」的回答素材。
-> 状态:方向一、方向六已落地实施;其余方向为话术与规划。
-> 关联:设计文档 `rule-review-design.md`、工作流文档 `rule-review-workflow.md`、测试 `tests/test_rule_review_evaluation.py`、`tests/test_rule_review_observability.py`。
+> 状态:方向一、方向六、方向九已落地实施;其余方向为话术与规划。
+> 关联:设计文档 `rule-review-design.md`、工作流文档 `rule-review-workflow.md`、测试 `tests/test_rule_review_evaluation.py`、`tests/test_rule_review_observability.py`、`tests/test_rule_review_llm_judge_metrics.py`。
 
 ---
 
 ## 回答框架(开场 30 秒)
 
-「我盘点过这个项目的优化空间,按**面试官视角**排了个优先级:先补可复现的指标(评估闭环)、再补可观测的底座(延迟分位数/审计字段)、然后是体验层(真流式/多轮)、最后是规模化(Milvus/PG 接线)和前沿探索(GraphRAG)。其中前两个我已经落地了,后面是规划中的二期。」
+「我盘点过这个项目的优化空间,按**面试官视角**排了个优先级:先补可复现的指标(评估闭环)、再补可观测的底座(延迟分位数/审计字段)、然后是体验层(真流式/多轮)、最后是规模化(Milvus/PG 接线)和前沿探索(GraphRAG)。其中评估闭环、可观测性和 RAGAS 风格的 LLM-as-judge 评测我已经落地了,后面是规划中的二期。」
 
-- 已落地:✅ 方向一(评估体系闭环)、方向六(可观测性)
+- 已落地:✅ 方向一(评估体系闭环)、方向六(可观测性)、方向九(RAGAS 风格 LLM-judge 评测)
 - 规划中:方向二~五、七、八
 
 ---
@@ -161,6 +161,42 @@
 
 ---
 
+## 方向九:RAGAS 风格自动化评测指标(LLM-as-Judge)✅(已实施)
+
+**定位**:面试「RAG 怎么自动化评测?」「LLM-as-judge 怎么落地?」「RAGAS 了解吗?」三件套的高频考点,把评估体系从「规则式指标」升级为「RAGAS 四指标」——检索质量和生成质量都有了 LLM 视角的量化口径。
+
+**现状缺口**:方向一的评估只有规则式指标(decision_accuracy / keyword_recall / recall@k / MRR / LCS 幻觉检测),没有生成质量(faithfulness、答案相关性)与检索质量(context precision/recall)的语义级度量——关键词命中 ≠ 事实正确,需要 LLM 当裁判。
+
+**怎么做(已落地)**:
+1. 新增 `src/rule_review/llm_judge_metrics.py`,自研 RAGAS 四指标(**不引入 ragas 库**,可讲原理):
+   - **Faithfulness(忠实度)**:从回答抽取 claims,逐条验证是否被检索 context 支持,分数 = 受支持 claims / 总 claims;claim 抽取与验证合并为**一次** LLM 调用(在 prompt 中要求同时输出 claims 与逐条 supported);
+   - **Answer Relevancy(答案相关性)**:LLM judge 按 rubric 直接打分 0-1(官方做法是「由回答反生成若干问题 + 嵌入相似度」,需加载 bge-m3 约 2GB,当前为简化版,升级路径是复用 `DocumentStore.embedding_fn`);
+   - **Context Precision(上下文精度)**:逐 chunk 判定与 question 的相关性,按 RAGAS 口径 `Σ(P@k × rel_k) / Σ rel_k` 加权,衡量「相关 chunk 是否排得靠前」;
+   - **Context Recall(上下文召回)**:参考答案逐句判定是否被 context 支持,衡量「检索全不全」;
+2. pipeline 检索 stage 新增 `retrieved_chunks_full`(完整 chunk 文本透传,原 200 字符截断保留),保证 LLM 判分不因截断失真;
+3. `evaluation.py` 集成:`TestCase` 加可选 `reference_answer` 字段(缺省时 precision/recall 降级 None,旧测试集零破坏)、`EvalMetrics/EvalReport` 加四指标与聚合、`EvalRunner` 支持 `judge_model` 注入与 `ragas_enabled` 开关、异常全降级不阻断主流程;
+4. 新增 CLI:`python -m src.rule_review.evaluation --ragas --top-k 10`,报告落盘 `data/evaluation/reports/`,摘要打印含降级计数;
+5. 测试集 5 条代表性用例补 `reference_answer`,澄清/未命中用例故意不填演示降级路径。
+
+**预期指标**:每用例 ≤5 次 LLM 调用(四指标中 claim 抽取+验证合并),14 条全量 ≈ 56-70 次;阈值建议(需按人工抽样校准口径):faithfulness ≥ 0.8 / answer_relevancy ≥ 0.7 / context_precision ≥ 0.7 / context_recall ≥ 0.8。
+
+**面试话术**(约 30 秒):
+
+> 我做了一套 RAGAS 风格的自动化评测,四个指标覆盖两个层面:检索层看 context precision 和 context recall——相关 chunk 排得靠不靠前、该召回的全不全;生成层看 faithfulness 和 answer relevancy——回答有没有忠实于检索到的规则原文、有没有跑题。实现上我没引 ragas 库,自己写的 LLM-as-judge:claim 抽取和验证合并成一次调用控制成本,每用例不超过 5 次调用。评测模型我特意走 httpx 直连而不是 langchain 的 ChatQwen——后者会拉进 torch,和 faiss 的 OpenMP 运行库在 macOS 上冲突,进程直接 abort,这个坑我踩过。所有指标都做了降级:缺参考答案、检索为空、模型调用失败,该指标就置 None 并标注,绝不阻断评估主流程。
+
+**追问预案**:
+| 追问 | 回答要点 |
+|---|---|
+| 为什么不用现成的 ragas 库? | 库是黑盒,面试讲不透原理;自研可完全掌控 prompt 与降级语义;换指标口径只需改 prompt,不升级依赖 |
+| Answer Relevancy 为什么简化成直接打分? | 官方做法「反生成问题 + 嵌入相似度」需要加载 bge-m3(约 2GB),且反生成本身也是一次 LLM 调用;打分版与「自研 LLM-as-judge」主题一致,升级路径已写在模块 docstring |
+| 为什么 claim 抽取和验证合并成一次调用? | 两次调用会让成本翻倍(14 条 × 2);合并后让模型同时输出 claims 和逐条 supported,一次搞定,代价是 prompt 稍长 |
+| LLM judge 和规则式指标的分工? | 规则式(keyword_recall/LCS 幻觉)快、零成本、可回归;LLM 指标是语义级、慢但准;两者互补——规则指标做每日回归,LLM 指标做迭代验收 |
+| 评测模型为什么不能和生成模型同一个? | 判分模型与被评模型同源会有系统性偏差;评测走独立 `JUDGE_MODEL` 配置(强模型审弱模型),temperature=0 保证可复现 |
+| 70 次调用成本怎么办? | 离线批量、串行 5-10 分钟可接受;指标结果带 `judge_latency_ms` 归因;后续可做调用级缓存与并发 |
+| 为什么评测模型走 httpx 不走 ChatQwen? | ChatQwen → langchain_qwq → torch,自带 libomp.dylib,与 faiss 的 OpenMP 运行库冲突,同进程先加载后 faiss.search 直接 abort(踩过的坑);ProxyChatModel 纯 httpx,无此问题 |
+
+---
+
 ## 附:可添加的新工具候选(面试问「你想加什么工具」时用)
 
 | 工具 | 业务动机 | 实现要点 |
@@ -177,6 +213,6 @@
 
 ## 回答节奏建议
 
-1. **开场**:先讲已落地的两个(评估闭环、可观测性)——「这两个是我盘点后优先做的,因为它们让简历上的指标可复现」;
+1. **开场**:先讲已落地的三个(评估闭环、可观测性、RAGAS 评测)——「这三个是我盘点后优先做的,因为它们让简历上的指标可复现,还把 RAG 评测的 LLM-as-judge 口径落地了」;
 2. **中段**:讲 1-2 个规划中的(建议 Judge 接线 + 真流式/多轮,二选一深入);
 3. **收尾**:补一句方法论——「我的原则是:每个优化必须可测量(离线指标或线上观测),没有增量验证不上线」。
