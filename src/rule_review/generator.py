@@ -202,6 +202,11 @@ class RuleReviewGenerator:
 
                 result = parse_llm_output(raw_text)
                 if result is not None:
+                    # 透传 token 用量（可观测性：成本与延迟归因）。
+                    # 不同模型暴露 usage 的位置不一，容错读取，拿不到保持 0。
+                    usage = getattr(response, "usage_metadata", None) or {}
+                    result.tok_input = int(usage.get("input_tokens", 0) or 0)
+                    result.tok_output = int(usage.get("output_tokens", 0) or 0)
                     return result
 
                 if attempt < max_retries:

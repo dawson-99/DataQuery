@@ -55,6 +55,9 @@ class LLMOutput(BaseModel):
     tool_unsolved_reason: str = ""
     judge_skipped: bool = Field(default=False, description="是否跳过 Judge 校验")
     judge_skipped_reason: str = ""
+    # token 用量（可观测性：成本与延迟归因；模型未透传 usage 时保持 0）
+    tok_input: int = Field(default=0, description="输入 token 数")
+    tok_output: int = Field(default=0, description="输出 token 数")
 
 
 class ToolCallLog(BaseModel):

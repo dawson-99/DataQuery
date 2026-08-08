@@ -353,3 +353,18 @@ async def delete_audit_record(
         "deleted": True,
         "query_id": query_id,
     })
+
+
+@router.get("/observability/latency", summary="阶段延迟分位数统计")
+async def get_latency_stats() -> JSONResponse:
+    """获取各阶段延迟统计（P50/P95/均值/样本数）。
+
+    用于可观测性监控：定位最慢阶段、跟踪延迟趋势。
+    """
+    from src.rule_review.observability import get_default_stats
+
+    stats = get_default_stats()
+    return JSONResponse(content={
+        "status": "success",
+        "data": stats.summary(),
+    })

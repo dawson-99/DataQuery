@@ -1650,7 +1650,6 @@ class BaseWorkflow(ABC):
 
                 ## 后置处理
                 post_processing = intent_result.get('post_processing', []) if isinstance(intent_result, dict) else []
-                print(post_processing, intent_result)
                 if post_processing:
                     TIME_POINT_ALIAS_MAP = {"v0000": "v2400"}
                     for step in post_processing:
@@ -1770,9 +1769,7 @@ class BaseWorkflow(ABC):
                 return response
 
         except Exception as e:
-            logger.error(f"[{workflow_name}] 工作流执行错误: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"[{workflow_name}] 工作流执行错误: {e}")
             friendly = self._to_user_friendly_error(str(e))
             return {
                 "conversation_id": self.conversation_id,
@@ -2071,9 +2068,7 @@ class BaseWorkflow(ABC):
             logger.info(f"[{workflow_name}] 工作流执行完成（流式）")
 
         except Exception as e:
-            logger.error(f"[{workflow_name}] 工作流执行错误（流式）: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"[{workflow_name}] 工作流执行错误（流式）: {e}")
             yield self._to_user_friendly_error(str(e))
 
     async def _extract_parameters(self, user_query: str, intent_result: Dict) -> Dict[str, Any]:

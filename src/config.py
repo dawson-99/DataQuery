@@ -70,6 +70,7 @@ class Settings:
         self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
         self.LOG_BACKUP_COUNT: int = int(os.getenv("LOG_BACKUP_COUNT", "30"))
         self.LOG_QUEUE_SIZE: int = int(os.getenv("LOG_QUEUE_SIZE", "10000"))  # 异步日志队列大小
+        self.LOG_FORMAT: str = os.getenv("LOG_FORMAT", "text")  # text | json（结构化日志）
 
         # ---------- 缓存配置 ----------
         self.CACHE_EXPIRY_HOURS: int = int(os.getenv("CACHE_EXPIRY_HOURS", "1"))

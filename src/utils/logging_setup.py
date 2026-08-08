@@ -1,4 +1,5 @@
 import contextvars
+import json
 import logging
 import sys
 from logging.handlers import TimedRotatingFileHandler
@@ -24,13 +25,39 @@ class TraceIdFilter(logging.Filter):
         return True
 
 
+class JsonFormatter(logging.Formatter):
+    """结构化 JSON 日志格式：{ts, level, name, trace_id, msg, **extra}
+
+    通过 extra 传入的结构化字段（stage/latency_ms/query_id 等）会并入 JSON，
+    便于可观测性平台直接解析。
+    """
+
+    _EXTRA_KEYS = ("stage", "latency_ms", "query_id")
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "name": record.name,
+            "trace_id": getattr(record, "trace_id", "-"),
+            "msg": record.getMessage(),
+        }
+        for key in self._EXTRA_KEYS:
+            if hasattr(record, key):
+                payload[key] = getattr(record, key)
+        return json.dumps(payload, ensure_ascii=False)
+
+
 def _create_handlers():
     log_dir = Path(settings.LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
     file_handler = TimedRotatingFileHandler(
         filename=str(log_dir / "app.log"), when="midnight", interval=1, backupCount=settings.LOG_BACKUP_COUNT, encoding="utf-8"
     )
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(trace_id)s] %(message)s")
+    if settings.LOG_FORMAT == "json":
+        formatter = JsonFormatter()  # type: ignore[assignment]
+    else:
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(trace_id)s] %(message)s")
     file_handler.setFormatter(formatter)
     file_handler.addFilter(TraceIdFilter())
     stream_handler = logging.StreamHandler(sys.stdout)

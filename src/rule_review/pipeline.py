@@ -22,9 +22,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
+from src.config import settings
 from src.rule_review.audit import AuditStore, build_source_traceability
 from src.rule_review.document_store import DocumentStore
 from src.rule_review.generator import RuleReviewGenerator, parse_llm_output
+from src.rule_review.observability import LatencyStats, get_default_stats
 from src.rule_review.query_rewriter import QueryRewriter
 from src.rule_review.retriever import HybridRetriever, RetrieveResult
 from src.rule_review.schemas import (
@@ -228,6 +230,7 @@ class RuleReviewPipeline:
         generator: RuleReviewGenerator | None = None,
         judge: Any | None = None,  # RuleReviewJudge，Phase 1 可选
         audit_store: AuditStore | None = None,  # 审计存储，None 时不记录
+        stats: LatencyStats | None = None,  # 延迟统计，None 时用默认单例
     ) -> None:
         """
         Args:
@@ -237,6 +240,7 @@ class RuleReviewPipeline:
             generator: LLM 推理器，None 时自动创建。
             judge: Judge 校验器，None 时跳过校验阶段。
             audit_store: 审计存储，None 时不记录审计日志。
+            stats: 阶段延迟统计（可观测性），None 时用默认单例。
         """
         self.rewriter = rewriter or QueryRewriter()
         self.doc_store = document_store or DocumentStore()
@@ -244,6 +248,7 @@ class RuleReviewPipeline:
         self.generator = generator or RuleReviewGenerator()
         self.judge = judge  # None → 跳过 Judge 阶段
         self.audit_store = audit_store  # None → 不记录审计
+        self.stats = stats  # None → 记录时取默认单例
 
     # ------------------------------------------------------------------
     # 全流程：生成器方法
@@ -441,7 +446,19 @@ class RuleReviewPipeline:
             )
 
         elapsed = time.monotonic() - stage_start
-        logger.info("[pipeline] 完成，耗时 %.2fs, query_id=%s", elapsed, query_id)
+        logger.info(
+            "[pipeline] 完成，耗时 %.2fs, query_id=%s",
+            elapsed, query_id,
+            extra={"stage": "total", "latency_ms": round(elapsed * 1000, 2)},
+        )
+
+        # ---- 延迟统计（可观测性）----
+        self._record_latencies(
+            retrieval_ms=retrieval_latency_ms,
+            generation_ms=generation_latency_ms,
+            judge_ms=judge_audit.latency_ms if judge_audit else 0.0,
+            total_ms=elapsed * 1000,
+        )
 
         # ---- 构建并保存审计记录 ----
         if self.audit_store is not None:
@@ -458,11 +475,15 @@ class RuleReviewPipeline:
                     retrieval=RetrievalAudit(
                         bm25_k=retrieve_result.bm25_hits,
                         vector_k=retrieve_result.vector_hits,
+                        sparse_k=0,  # SparseRetriever 未接入运行路径，如实记录
                         final_k=len(retrieve_result.results),
                         search_expanded=retrieve_result.search_expanded,
                         retrieval_latency_ms=round(retrieval_latency_ms, 2),
                     ),
                     llm_generation=LLMGenerationAudit(
+                        model=settings.RULE_REVIEW_MODEL,
+                        tok_input=llm_output.tok_input,
+                        tok_output=llm_output.tok_output,
                         not_found=llm_output.not_found,
                         latency_ms=round(generation_latency_ms, 2),
                     ),
@@ -488,6 +509,7 @@ class RuleReviewPipeline:
             包含最终结果和所有阶段信息的字典。
         """
         query_id = str(uuid.uuid4())
+        stage_start = time.monotonic()
         stages_log: list[dict] = []
 
         # 阶段 0
@@ -510,6 +532,7 @@ class RuleReviewPipeline:
         stages_log.append({"stage": "split", "is_multi_doc": is_multi_doc, "sub_items": len(sub_items)})
 
         # 阶段 3+4: 检索
+        retrieval_start = time.monotonic()
         if is_multi_doc:
             retrieve_tasks = [
                 asyncio.to_thread(
@@ -526,6 +549,7 @@ class RuleReviewPipeline:
             retrieve_result = self.retriever.retrieve_with_fallback(
                 rewritten_query, top_k=request.top_k
             )
+        retrieval_latency_ms = (time.monotonic() - retrieval_start) * 1000
 
         stages_log.append({
             "stage": "retrieval",
@@ -552,11 +576,13 @@ class RuleReviewPipeline:
             }
 
         # 阶段 5: LLM 生成
+        generation_start = time.monotonic()
         context_chunks = self._chunks_to_dict_list(retrieve_result.results)
         llm_output = await self.generator.generate(
             query=rewritten_query,
             context_chunks=context_chunks,
         )
+        generation_latency_ms = (time.monotonic() - generation_start) * 1000
 
         if llm_output is None:
             return {
@@ -596,19 +622,46 @@ class RuleReviewPipeline:
             })
 
         # ---- 阶段 7：Judge 校验 ----
+        judge_audit = JudgeAudit(skipped=True, skipped_reason="no_judge_configured")
         final_result = final_llm_output.model_dump()
         if self.judge is not None:
-            from src.rule_review.judge import verify_with_fallback
+            judge_start = time.monotonic()
+            try:
+                from src.rule_review.judge import verify_with_fallback
 
-            judged = await verify_with_fallback(
-                self.judge, final_llm_output, rewritten_query, context_chunks
-            )
-            final_result = judged
+                judged = await verify_with_fallback(
+                    self.judge, final_llm_output, rewritten_query, context_chunks
+                )
+                final_result = judged
+                if judged.get("judge_skipped"):
+                    judge_audit = JudgeAudit(
+                        skipped=True,
+                        skipped_reason=judged.get("judge_skipped_reason", "unknown"),
+                        latency_ms=(time.monotonic() - judge_start) * 1000,
+                    )
+                else:
+                    judge_audit = JudgeAudit(
+                        verified=judged.get("verified", False),
+                        hallucinated_count=len(judged.get("hallucinated_evidence", [])),
+                        skipped=False,
+                        latency_ms=(time.monotonic() - judge_start) * 1000,
+                    )
+            except Exception as e:
+                logger.warning("[pipeline] Judge 阶段异常: %s", e)
+                judge_audit = JudgeAudit(skipped=True, skipped_reason=str(e))
             stages_log.append({
                 "stage": "judge",
                 "skipped": judged.get("judge_skipped", False),
                 "verified": judged.get("judge_verified", False),
             })
+
+        # ---- 延迟统计（可观测性）----
+        self._record_latencies(
+            retrieval_ms=retrieval_latency_ms,
+            generation_ms=generation_latency_ms,
+            judge_ms=judge_audit.latency_ms if judge_audit else 0.0,
+            total_ms=(time.monotonic() - stage_start) * 1000,
+        )
 
         # ---- 构建并保存审计记录 ----
         if self.audit_store is not None:
@@ -624,11 +677,17 @@ class RuleReviewPipeline:
                     retrieval=RetrievalAudit(
                         bm25_k=retrieve_result.bm25_hits,
                         vector_k=retrieve_result.vector_hits,
+                        sparse_k=0,  # SparseRetriever 未接入运行路径，如实记录
                         final_k=len(retrieve_result.results),
                         search_expanded=retrieve_result.search_expanded,
+                        retrieval_latency_ms=round(retrieval_latency_ms, 2),
                     ),
                     llm_generation=LLMGenerationAudit(
+                        model=settings.RULE_REVIEW_MODEL,
+                        tok_input=llm_output.tok_input,
+                        tok_output=llm_output.tok_output,
                         not_found=llm_output.not_found,
+                        latency_ms=round(generation_latency_ms, 2),
                     ),
                     tool_executions=[
                         ToolCallLog(
@@ -688,6 +747,26 @@ class RuleReviewPipeline:
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
+
+    def _record_latencies(
+        self,
+        retrieval_ms: float,
+        generation_ms: float,
+        judge_ms: float,
+        total_ms: float,
+    ) -> None:
+        """记录各阶段耗时到延迟统计（可观测性）。
+
+        统计失败仅记 debug 日志，绝不阻断主流程。
+        """
+        try:
+            stats = self.stats or get_default_stats()
+            stats.record("retrieval", retrieval_ms)
+            stats.record("generation", generation_ms)
+            stats.record("judge", judge_ms)
+            stats.record("total", total_ms)
+        except Exception:
+            logger.debug("[pipeline] 延迟统计记录失败", exc_info=True)
 
     @staticmethod
     def _chunks_to_dict_list(
