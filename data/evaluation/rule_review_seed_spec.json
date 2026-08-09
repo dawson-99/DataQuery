@@ -1,0 +1,213 @@
+{
+  "version": 1,
+  "description": "规则审查 SFT 种子规格：用户 query + 期望工具工作流 + 期望决策。由 build_rule_review_seeds.py 蒸馏生成完整训练样本。",
+  "facts": {
+    "price_cap_mwh": 760,
+    "docs": ["省间电力现货交易规则.pdf", "省内电力交易规则.pdf", "电力市场监管办法.pdf"],
+    "regions": ["冀北", "山西", "蒙东", "蒙西", "四川主网"],
+    "dates": ["2025-03-15", "2025-06-01", "2024-12-31"]
+  },
+  "seeds": [
+    {
+      "scenario_id": "extract_001",
+      "category": "extract",
+      "user_query": "根据省间现货规则的价格表，冀北的日前现货出清电价上限是多少？",
+      "expected_workflow": "extract_table_data(地区=冀北, 列=电价上限) → 结论",
+      "expected_tools": ["extract_table_data"],
+      "expected_decision": "无法判断",
+      "note": "表格取数验证；结论需基于提取值"
+    },
+    {
+      "scenario_id": "extract_002",
+      "category": "extract",
+      "user_query": "山西的现货申报价格上限是多少元/MWh？",
+      "expected_workflow": "extract_table_data(地区=山西, 列=价格上限) → 结论",
+      "expected_tools": ["extract_table_data"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "compare_001",
+      "category": "compare",
+      "user_query": "2025年3月15日冀北的日前现货出清电价800元/MWh是否超过价格上限？",
+      "expected_workflow": "extract_table_data(冀北, 上限) → arithmetic_compare(800 gt 760) → 不符合",
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "compare_002",
+      "category": "compare",
+      "user_query": "2025年3月15日冀北的日前现货出清电价500元/MWh是否低于价格上限？",
+      "expected_workflow": "extract_table_data(冀北, 上限) → arithmetic_compare(500 lt 760) → 符合",
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_decision": "符合"
+    },
+    {
+      "scenario_id": "compare_003",
+      "category": "compare",
+      "user_query": "申报电价恰好等于760元/MWh，是否满足价格上限要求？",
+      "expected_workflow": "arithmetic_compare(760 eq 760) → 符合",
+      "expected_tools": ["arithmetic_compare"],
+      "expected_decision": "符合"
+    },
+    {
+      "scenario_id": "compare_004",
+      "category": "compare",
+      "user_query": "实际出清价780元/MWh与上限760元/MWh相比是高了还是低了？",
+      "expected_workflow": "arithmetic_compare(780 gt 760) → 高出20元/MWh",
+      "expected_tools": ["arithmetic_compare"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "unit_001",
+      "category": "unit",
+      "user_query": "报价为0.8元/kWh，换算成元/MWh 是多少？是否超过760元/MWh的上限？",
+      "expected_workflow": "unit_converter(0.8, 元/kWh, 元/MWh) → arithmetic_compare(800 gt 760) → 不符合",
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "unit_002",
+      "category": "unit",
+      "user_query": "交易申报量为30000kWh，是否符合单笔交易不少于1万kWh的要求？",
+      "expected_workflow": "unit_converter(30000, kWh, 万kWh) → arithmetic_compare(3 gte 1) → 符合",
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_decision": "符合"
+    },
+    {
+      "scenario_id": "date_001",
+      "category": "date",
+      "user_query": "省间电力现货交易规则2025年3月15日时是否已经生效？",
+      "expected_workflow": "validate_date_applicability(规则文本, 2025-03-15) → 有效",
+      "expected_tools": ["validate_date_applicability"],
+      "expected_decision": "符合"
+    },
+    {
+      "scenario_id": "date_002",
+      "category": "date",
+      "user_query": "用2024年1月1日实施的旧版规则判断2025年6月的交易是否合适？",
+      "expected_workflow": "validate_date_applicability(旧规则, 2025-06-01) → 已废止不适用",
+      "expected_tools": ["validate_date_applicability"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "cross_ref_001",
+      "category": "cross_ref",
+      "user_query": "现货交易规则第十条提到的\"参照第五条执行\"，第五条的具体内容是什么？",
+      "expected_workflow": "resolve_cross_reference(引用文本) → locate_clause(第五条) → 原文",
+      "expected_tools": ["resolve_cross_reference", "locate_clause"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "locate_001",
+      "category": "locate",
+      "user_query": "请定位省间现货交易规则第十二条的原文内容。",
+      "expected_workflow": "locate_clause(第十二条, doc_name=省间) → 原文",
+      "expected_tools": ["locate_clause"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "locate_002",
+      "category": "locate",
+      "user_query": "规则第五条第（二）款对超过上限的申报是怎么规定的？",
+      "expected_workflow": "locate_clause(第五条, 第（二）款) → 款原文 → 结论",
+      "expected_tools": ["locate_clause"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "numeric_001",
+      "category": "numeric",
+      "user_query": "规则正文中关于冀北现货出清电价上限规定的具体数值是多少？",
+      "expected_workflow": "extract_numeric_fact(正文, subject=冀北) → 数值",
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "numeric_002",
+      "category": "numeric",
+      "user_query": "市场管理细则规定的中长期合同电量占比是多少？",
+      "expected_workflow": "extract_numeric_fact(正文) → 占比数值",
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "conflict_001",
+      "category": "conflict",
+      "user_query": "省间现货规则规定上限800元/MWh，省内规则规定760元/MWh，两者是否冲突？",
+      "expected_workflow": "locate_clause(双方上限条款) → detect_rule_conflict(pairs) → 数值冲突",
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "conflict_002",
+      "category": "conflict",
+      "user_query": "现货规则与中长期规则对申报时段的规定是否一致？",
+      "expected_workflow": "locate_clause(双方条款) → detect_rule_conflict(pairs) → 判定",
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "citation_001",
+      "category": "citation",
+      "user_query": "我引用\"现货出清电价上限为760元/MWh\"，来源标注为省间现货交易规则第3页，这个引用是否准确？",
+      "expected_workflow": "verify_citation(evidence_text, source, page) → 核验结果",
+      "expected_tools": ["verify_citation"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "multi_doc_001",
+      "category": "multi_doc",
+      "user_query": "冀北2025年3月的现货出清电价，省间规则和省内规则哪个规定的上限更高？",
+      "expected_workflow": "locate_clause(省间上限) → locate_clause(省内上限) → extract_table_data/compare → 结论",
+      "expected_tools": ["locate_clause", "arithmetic_compare"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "multi_doc_002",
+      "category": "multi_doc",
+      "user_query": "监管办法与现货规则对违规申报处罚的规定是否矛盾？",
+      "expected_workflow": "locate_clause(两文档处罚条款) → detect_rule_conflict → 结论",
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_decision": "无法判断"
+    },
+    {
+      "scenario_id": "compare_005",
+      "category": "compare",
+      "user_query": "2025年3月15日蒙东的日前现货出清电价810元/MWh是否符合价格上限规则？",
+      "expected_workflow": "extract_table_data(蒙东, 上限) → arithmetic_compare(810 gt 上限) → 不符合",
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "compare_006",
+      "category": "compare",
+      "user_query": "2025年3月15日四川主网的日前现货出清电价620元/MWh是否在允许范围内？",
+      "expected_workflow": "extract_table_data(四川主网, 上限) → arithmetic_compare(620 lt 760) → 符合",
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_decision": "符合"
+    },
+    {
+      "scenario_id": "unit_003",
+      "category": "unit",
+      "user_query": "报价为500元/千度，是否低于760元/MWh的价格上限？",
+      "expected_workflow": "unit_converter(500, 元/千度, 元/MWh) → arithmetic_compare(500 lt 760) → 符合",
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_decision": "符合"
+    },
+    {
+      "scenario_id": "date_003",
+      "category": "date",
+      "user_query": "规则规定2024年12月31日废止，2025年3月15日的交易还能依据它判断吗？",
+      "expected_workflow": "validate_date_applicability(废止日期, 2025-03-15) → 已废止 → 不适用",
+      "expected_tools": ["validate_date_applicability"],
+      "expected_decision": "不符合"
+    },
+    {
+      "scenario_id": "extract_003",
+      "category": "extract",
+      "user_query": "价格上限表中蒙西对应的上限值是多少？",
+      "expected_workflow": "extract_table_data(地区=蒙西, 列=价格上限) → 结论",
+      "expected_tools": ["extract_table_data"],
+      "expected_decision": "无法判断"
+    }
+  ]
+}
