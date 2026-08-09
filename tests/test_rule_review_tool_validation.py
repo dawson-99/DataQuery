@@ -48,6 +48,13 @@ class TestSystemPromptV2:
         assert "validate_date_applicability" in prompt
         assert "unit_converter" in prompt
 
+    def test_contains_a_layer_tools(self):
+        prompt = get_system_prompt(include_tools=True)
+        assert "locate_clause" in prompt
+        assert "verify_citation" in prompt
+        assert "extract_numeric_fact" in prompt
+        assert "detect_rule_conflict" in prompt
+
     def test_contains_tool_example(self):
         prompt = get_system_prompt(include_tools=True)
         assert "冀北电价800元/MWh是否超出上限" in prompt

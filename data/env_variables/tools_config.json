@@ -97,6 +97,92 @@
         }
       },
       "output": {"value": "number", "unit": "string"}
+    },
+    "locate_clause": {
+      "name": "条款定位器",
+      "description": "按'第X条第Y款'在规则文档中精确定位条款原文，返回完整条款文本与来源位置。用于校验引用是否真实存在，或补检遗漏的规则条款（如 Judge 提示缺失某条规则时）。",
+      "triggers": ["第X条", "第X款", "条款定位", "找到条款", "核实条款", "补检", "遗漏条款"],
+      "parameters": {
+        "article_no": "条款号，支持阿拉伯数字、中文数字或'第12条'完整形式",
+        "paragraph_no": "款号，可选",
+        "doc_name": "文档名过滤，跨文档检索时必须传",
+        "chunks": "候选检索 chunks 列表（工具执行时由系统注入）",
+        "all_chunks": "全量 chunks 列表，候选未命中时的备选（系统注入）"
+      },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["article_no"],
+        "properties": {
+          "article_no": {},
+          "paragraph_no": {},
+          "doc_name": {"type": "string"},
+          "chunks": {"type": "array"},
+          "all_chunks": {"type": "array"}
+        }
+      },
+      "output": {"found": "boolean", "clause_text": "string", "paragraph_text": "string", "match_level": "string", "source": "string", "page": "int"}
+    },
+    "verify_citation": {
+      "name": "证据引用核验",
+      "description": "校验 evidence 引用的来源文档、章节、页码与原文文本是否一致。在输出引用前调用，拦截编造或改写的引用，减轻 Judge 校验负担。",
+      "triggers": ["核实引用", "验证引用", "核对来源", "证据核验", "引用是否准确", "引用是否真实"],
+      "parameters": {
+        "evidence_text": "待核验的 evidence 原文引用文本",
+        "claimed_source": "声称的文档名（可带《》）",
+        "claimed_section": "声称的章节标题",
+        "claimed_page": "声称的页码，0 表示未声称（跳过页码校验）",
+        "claimed_chunk_id": "声称的 chunk_id，非空时优先与该 chunk 比对",
+        "chunks": "检索结果 chunks 列表（系统注入）"
+      },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["evidence_text"],
+        "properties": {
+          "evidence_text": {"type": "string"},
+          "claimed_source": {"type": "string"},
+          "claimed_section": {"type": "string"},
+          "claimed_page": {"type": "integer"},
+          "claimed_chunk_id": {"type": "string"},
+          "chunks": {"type": "array"}
+        }
+      },
+      "output": {"verified": "boolean", "text_match_ratio": "number", "source_matched": "boolean", "section_matched": "boolean", "page_matched": "boolean", "issues": "array"}
+    },
+    "extract_numeric_fact": {
+      "name": "数值事实提取",
+      "description": "从非表格的规则正文中提取'主体+数值+单位'三元组。规则正文中的大量数值（如'冀北现货出清电价上限为800元/MWh'）不在表格里，用本工具精确提取避免 LLM 漏读或估算。",
+      "triggers": ["提取数值", "正文中的数字", "数值事实", "规定多少", "事实提取", "数值提取"],
+      "parameters": {
+        "text": "规则正文文本片段",
+        "subject": "可选主体限定，只返回该主体的 fact（如'冀北'）",
+        "max_facts": "最多返回的 fact 数，默认 20"
+      },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {"type": "string"},
+          "subject": {"type": "string"},
+          "max_facts": {"type": "integer"}
+        }
+      },
+      "output": {"facts": "array", "each": {"subject": "string", "value": "number", "unit": "string", "raw": "string", "position": "int"}}
+    },
+    "detect_rule_conflict": {
+      "name": "多文档冲突检测",
+      "description": "检测多个规则文档对同一事项的规定是否冲突。先对双方条文提取数值并单位归一化后比较；无数值场景按文本相似度判断，不硬判语义冲突。建议先调用 locate_clause 定位双方条款原文。",
+      "triggers": ["冲突", "不一致", "矛盾", "规定不同", "两个文档", "以哪个为准", "孰高孰低", "哪个规定"],
+      "parameters": {
+        "pairs": "待检测的规则对数组，每项含 doc_a/doc_b/topic/rule_a_text/rule_b_text"
+      },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["pairs"],
+        "properties": {
+          "pairs": {"type": "array"}
+        }
+      },
+      "output": {"conflicts": "array", "each": {"doc_a": "string", "doc_b": "string", "topic": "string", "conflict": "boolean", "conflict_type": "string", "reason": "string"}}
     }
   }
 }

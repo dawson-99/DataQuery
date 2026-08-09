@@ -44,6 +44,7 @@ _UNIT_TO_YUAN_PER_MWH: dict[str, float] = {
     "元/千度": 1.0,
     "元/万kWh": 0.1,
     "分/kWh": 10.0,
+    "元/kWh": 1000.0,
     "元/MWh万": 1.0,
 }
 
@@ -777,3 +778,20 @@ def _find_in_chunks(
         if keyword in text:
             return chunk
     return None
+
+
+# ---------------------------------------------------------------------------
+# A 层四件套工具注册（底部延迟导入，避免与 tools_a_layer 循环依赖）
+# ---------------------------------------------------------------------------
+
+from src.rule_review.tools_a_layer import (  # noqa: E402
+    detect_rule_conflict,
+    extract_numeric_fact,
+    locate_clause,
+    verify_citation,
+)
+
+ToolExecutor.TOOL_MAP["locate_clause"] = locate_clause
+ToolExecutor.TOOL_MAP["verify_citation"] = verify_citation
+ToolExecutor.TOOL_MAP["extract_numeric_fact"] = extract_numeric_fact
+ToolExecutor.TOOL_MAP["detect_rule_conflict"] = detect_rule_conflict
