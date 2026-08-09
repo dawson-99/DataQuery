@@ -2,11 +2,18 @@
 电力规则审查系统 - 文档存储与索引模块
 
 按设计文档 Phase 1 步骤 1.3 实现：
-- PDF 解析（文本 PDF + 可选 OCR 扫描 PDF）
+- PDF 解析（分层：pymupdf 本地 / MinerU 本地，见 parsers.py 与 docs/rule-review.md §4.3）
 - 章节层级检测与表格转 Markdown
 - 按标题+表格联合策略切分 chunk
 - bge-m3 embedding（可注入）
 - FAISS 向量索引持久化
+
+解析分层改造说明：
+- 数据模型（TextBlock/TableBlock/PageContent/Chunk/DocumentInfo 等）移至 models.py，
+  本模块顶部 re-export，外部 import 全部保持不变
+- 解析器（OCRProcessor/PaddleOCRProcessor/PDFParser/PymupdfParser/MinerULocalParser）
+  移至 parsers.py；本模块负责解析器选择路由与 chunk 组装
+- 手动入库（重要政策问答表格）：ingest_manual()，识别准确率 100%，parse_mode=manual
 
 不调用 LLM，核心逻辑为纯 Python。
 """
@@ -15,28 +22,36 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import faiss
-import fitz  # pymupdf
 import numpy as np
-from PIL import Image
 
 from src.config import settings
+from src.rule_review.models import (
+    Chunk,
+    ChunkSearchResult,
+    DocumentInfo,
+    PageContent,
+    TableBlock,
+    TextBlock,
+)
+from src.rule_review.parsers import (
+    MinerULocalParser,
+    OCRProcessor,
+    PDFParser,
+    PaddleOCRProcessor,
+    PymupdfParser,
+    parse_markdown,
+)
 from src.rule_review.schemas import DocumentUploadResponse
 
 logger = logging.getLogger(__name__)
-
-# 判定页面为扫描件的最大可识别字符数阈值
-_SCANNED_TEXT_THRESHOLD = 50
 
 # chunk 默认参数：约 800 tokens 对应约 600 中文字符
 _DEFAULT_CHUNK_SIZE = 600
@@ -55,164 +70,6 @@ _HEADING_PATTERNS: list[tuple[int, re.Pattern]] = [
         ),
     ),
 ]
-
-
-# ---------------------------------------------------------------------------
-# 数据模型
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class TextBlock:
-    """文本块。"""
-
-    text: str
-    bbox: tuple[float, float, float, float]
-    confidence: float = 1.0
-
-
-@dataclass
-class TableBlock:
-    """表格块。"""
-
-    rows: list[list[str]]
-    bbox: tuple[float, float, float, float]
-    caption: str | None = None
-
-
-@dataclass
-class PageContent:
-    """单页解析结果。"""
-
-    text_blocks: list[TextBlock]
-    table_blocks: list[TableBlock]
-    avg_confidence: float = 1.0
-
-
-@dataclass
-class Chunk:
-    """检索单元。"""
-
-    chunk_id: str
-    doc_id: str
-    text: str
-    tables: list[dict] = field(default_factory=list)
-    section: str = ""
-    section_hierarchy: list[str] = field(default_factory=list)
-    page: int = 0
-    ocr_confidence: float = 1.0
-    is_scanned: bool = False
-    embedding: np.ndarray | None = None
-    faiss_id: int | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        if self.embedding is not None:
-            data["embedding"] = self.embedding.tolist()
-        else:
-            data["embedding"] = None
-        return data
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Chunk":
-        embedding = data.pop("embedding", None)
-        chunk = cls(**data)
-        if embedding is not None:
-            chunk.embedding = np.array(embedding, dtype=np.float32)
-        return chunk
-
-
-@dataclass
-class DocumentInfo:
-    """已入库文档元信息。"""
-
-    doc_id: str
-    file_name: str
-    page_count: int
-    chunk_count: int
-    created_at: str
-
-
-@dataclass
-class ChunkSearchResult:
-    """向量检索结果。"""
-
-    chunk: Chunk
-    score: float
-
-
-# ---------------------------------------------------------------------------
-# OCR 抽象
-# ---------------------------------------------------------------------------
-
-
-class OCRProcessor(ABC):
-    """OCR 处理器抽象基类，扫描 PDF 使用。"""
-
-    @property
-    @abstractmethod
-    def is_available(self) -> bool:
-        """OCR 是否可用。"""
-
-    @abstractmethod
-    def process_page(
-        self,
-        image: Image.Image | np.ndarray,
-        page_number: int = 0,
-    ) -> PageContent:
-        """对单页图片执行 OCR，返回结构化内容。"""
-
-
-class PaddleOCRProcessor(OCRProcessor):
-    """基于 PaddleOCR 的 OCR 实现。import 延迟，失败时 is_available=False。"""
-
-    def __init__(self, use_gpu: bool = False, show_log: bool = False) -> None:
-        self._available = False
-        self._ocr: Any | None = None
-        try:
-            from paddleocr import PaddleOCR
-
-            self._ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang="ch",
-                use_gpu=use_gpu,
-                show_log=show_log,
-            )
-            self._available = True
-        except Exception as exc:  # pragma: no cover - 运行环境未安装 paddleocr 时正常降级
-            logger.warning(f"PaddleOCR 初始化失败，扫描 PDF 将跳过: {exc}")
-
-    @property
-    def is_available(self) -> bool:
-        return self._available
-
-    def process_page(
-        self,
-        image: Image.Image | np.ndarray,
-        page_number: int = 0,
-    ) -> PageContent:
-        if not self._available or self._ocr is None:
-            raise RuntimeError("PaddleOCR 不可用")
-
-        arr = np.array(image) if isinstance(image, Image.Image) else image
-        result = self._ocr.ocr(arr, cls=True)
-
-        text_blocks: list[TextBlock] = []
-        confidences: list[float] = []
-        if result and result[0]:
-            for line in result[0]:
-                bbox, (text, conf) = line
-                text_blocks.append(
-                    TextBlock(text=text or "", bbox=tuple(bbox), confidence=float(conf))
-                )
-                confidences.append(float(conf))
-
-        avg_conf = float(np.mean(confidences)) if confidences else 1.0
-        return PageContent(
-            text_blocks=text_blocks,
-            table_blocks=[],
-            avg_confidence=avg_conf,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +134,8 @@ class DocumentStore:
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP,
         table_max_rows: int = _DEFAULT_TABLE_MAX_ROWS,
+        mineru_parser: PDFParser | None = None,
+        mineru_enabled: bool | None = None,
     ) -> None:
         """
         Args:
@@ -288,6 +147,8 @@ class DocumentStore:
             chunk_size: 纯文本 chunk 的最大字符数。
             chunk_overlap: 相邻 chunk 重叠字符数。
             table_max_rows: 表格超长时保留的最大行数。
+            mineru_parser: 可注入的 MinerU 解析器（测试用 fake；为空时用 MinerULocalParser 单例）。
+            mineru_enabled: 是否启用 MinerU 本地解析；为空时读 settings.RULE_REVIEW_MINERU_ENABLED。
         """
         self.documents_dir = Path(documents_dir or settings.RULE_DOCUMENTS_DIR)
         self.index_dir = Path(index_dir or settings.RULE_INDEX_DIR)
@@ -310,6 +171,14 @@ class DocumentStore:
         self.chunk_overlap = chunk_overlap
         self.table_max_rows = table_max_rows
 
+        # 解析分层：MinerU 解析器与启用开关（测试可注入 fake）
+        self.mineru_parser = mineru_parser
+        self.mineru_enabled = (
+            mineru_enabled
+            if mineru_enabled is not None
+            else settings.RULE_REVIEW_MINERU_ENABLED
+        )
+
         # 内存状态
         self._documents: dict[str, DocumentInfo] = {}
         self._chunks: dict[str, Chunk] = {}
@@ -329,61 +198,84 @@ class DocumentStore:
         file: str | Path | bytes | BinaryIO,
         filename: str | None = None,
         doc_id: str | None = None,
+        importance: str = "low",
+        parse_mode: str = "auto",
     ) -> DocumentUploadResponse:
-        """解析并索引一份 PDF 文档。"""
+        """解析并索引一份 PDF 文档（解析分层，见 docs/rule-review.md §4.3）。
+
+        Args:
+            file: PDF 文件（路径 / bytes / 文件对象）。
+            filename: 文件名；file 为 bytes/文件对象时必填或用于展示。
+            doc_id: 自定义文档 ID；为空时自动生成。
+            importance: 文档重要程度 high | low（显式标注，不做关键词自动识别）。
+            parse_mode: 解析方式 auto | mineru | pymupdf；auto 时 MinerU 可用则用之，
+                否则降级 pymupdf（降级后的实际模式写入 DocumentInfo.parse_mode）。
+        """
+        self._validate_importance(importance)
         data, filename = self._read_file(file, filename)
         doc_id = doc_id or uuid.uuid4().hex
 
         doc_path = self.documents_dir / f"{doc_id}.pdf"
         doc_path.write_bytes(data)
 
-        try:
-            doc = fitz.open(stream=data, filetype="pdf")
-        except Exception as exc:
-            raise ValueError(f"PDF 解析失败: {exc}") from exc
-
-        page_count = len(doc)
-        try:
-            chunks = self._parse_document(doc, doc_id)
-        finally:
-            doc.close()
-
-        # 生成 embedding
-        if chunks:
-            texts = [c.text for c in chunks]
-            embeddings = self.embedding_fn(texts)
-            self._ensure_index()
-            ids: list[int] = []
-            for chunk, emb in zip(chunks, embeddings):
-                chunk.embedding = np.ascontiguousarray(emb, dtype=np.float32)
-                chunk.faiss_id = self._next_faiss_id
-                ids.append(chunk.faiss_id)
-                self._next_faiss_id += 1
-
-                self._chunks[chunk.chunk_id] = chunk
-                self._faiss_id_to_chunk_id[chunk.faiss_id] = chunk.chunk_id
-                self._chunk_id_to_faiss_id[chunk.chunk_id] = chunk.faiss_id
-
-            ids_arr = np.array(ids, dtype=np.int64)
-            embs_arr = np.ascontiguousarray(embeddings.astype(np.float32))
-            self._index.add_with_ids(embs_arr, ids_arr)
-
-        doc_info = DocumentInfo(
-            doc_id=doc_id,
-            file_name=filename,
-            page_count=page_count,
-            chunk_count=len(chunks),
-            created_at=datetime.now().isoformat(),
+        chunks, actual_mode, page_count = self._parse_document(
+            data, filename, doc_id, parse_mode
         )
-        self._documents[doc_id] = doc_info
-        self.save()
+        return self._index_chunks(
+            chunks,
+            doc_id,
+            filename,
+            page_count,
+            importance,
+            actual_mode,
+        )
 
-        return DocumentUploadResponse(
-            doc_id=doc_id,
-            file_name=filename,
-            page_count=page_count,
-            chunk_count=len(chunks),
-            uploaded_at=doc_info.created_at,
+    def ingest_manual(
+        self,
+        markdown: str,
+        filename: str | None = None,
+        doc_id: str | None = None,
+        importance: str = "high",
+        source: str = "",
+    ) -> DocumentUploadResponse:
+        """手动入库：重要政策问答/表格以 Markdown 直接入库。
+
+        不生成 PDF 文件；parse_markdown → _build_chunks 走与 PDF 上传完全相同的
+        chunk 组装路径；parse_mode 记为 manual（识别准确率 100%，见 §4.3 评测方法）。
+
+        Args:
+            markdown: 规则 Markdown 内容（# 标题、段落、| 表格 |）。
+            filename: 文档名称；为空时自动生成。
+            doc_id: 自定义文档 ID；为空时自动生成。
+            importance: 重要程度，默认 high（手动入库面向重要内容）。
+            source: 来源说明（如「政策问答表格人工整理」）。
+        """
+        self._validate_importance(importance)
+        if not markdown or not markdown.strip():
+            raise ValueError("markdown 内容不能为空")
+
+        doc_id = doc_id or uuid.uuid4().hex
+        pages = parse_markdown(markdown)
+        chunks: list[Chunk] = []
+        section_stack: list[tuple[int, str]] = []
+        for page_number, page_content in enumerate(pages, start=1):
+            chunks.extend(
+                self._build_chunks(
+                    page_content,
+                    doc_id,
+                    page_number,
+                    section_stack,
+                    page_content.is_scanned,
+                )
+            )
+        return self._index_chunks(
+            chunks,
+            doc_id,
+            filename=filename or f"{doc_id}.md",
+            page_count=len(pages),
+            importance=importance,
+            parse_mode="manual",
+            source=source,
         )
 
     def delete(self, doc_id: str) -> bool:
@@ -598,90 +490,113 @@ class DocumentStore:
     # 内部：PDF 解析
     # ------------------------------------------------------------------
 
-    def _parse_document(self, doc: fitz.Document, doc_id: str) -> list[Chunk]:
+    def _validate_importance(self, importance: str) -> None:
+        """校验 importance 取值（high | low）。"""
+        if importance not in ("high", "low"):
+            raise ValueError(f"importance 仅支持 high/low，收到: {importance}")
+
+    def _select_parser(self, parse_mode: str) -> PDFParser:
+        """按 parse_mode 选择解析器；MinerU 不可用时降级 pymupdf。"""
+        if parse_mode == "auto":
+            if self.mineru_enabled:
+                parser = self.mineru_parser or MinerULocalParser()
+                if parser.is_available:
+                    return parser
+                logger.warning("MinerU 不可用（auto 模式），降级为 pymupdf 解析")
+            return PymupdfParser(ocr_engine=self.ocr_engine)
+        if parse_mode == "mineru":
+            parser = self.mineru_parser or MinerULocalParser()
+            if parser.is_available:
+                return parser
+            logger.warning("MinerU 不可用（mineru 模式），降级为 pymupdf 解析")
+            return PymupdfParser(ocr_engine=self.ocr_engine)
+        if parse_mode == "pymupdf":
+            return PymupdfParser(ocr_engine=self.ocr_engine)
+        raise ValueError(f"未知解析模式: {parse_mode}，仅支持 auto / mineru / pymupdf")
+
+    def _parse_document(
+        self,
+        data: bytes,
+        filename: str,
+        doc_id: str,
+        parse_mode: str,
+    ) -> tuple[list[Chunk], str, int]:
+        """选择解析器解析 PDF → chunks。
+
+        Returns:
+            (chunks, 实际解析模式, 页数)。实际模式含降级后的模式，
+            写入 DocumentInfo.parse_mode。
+        """
+        parser = self._select_parser(parse_mode)
+        pages = parser.parse(data, filename)
+
         chunks: list[Chunk] = []
         section_stack: list[tuple[int, str]] = []
-
-        for page_number, page in enumerate(doc, start=1):
-            is_scanned = self._is_scanned_page(page)
-
-            if is_scanned and self.ocr_engine is not None and self.ocr_engine.is_available:
-                page_content = self._ocr_page(page, page_number)
-                is_scanned_flag = True
-            else:
-                if is_scanned:
-                    logger.warning(
-                        f"第 {page_number} 页疑似扫描页但 OCR 不可用，已跳过"
-                    )
-                page_content = self._extract_text_page(page, page_number)
-                is_scanned_flag = False
-
-            page_chunks = self._build_chunks(
-                page_content,
-                doc_id,
-                page_number,
-                section_stack,
-                is_scanned_flag,
+        for page_number, page_content in enumerate(pages, start=1):
+            chunks.extend(
+                self._build_chunks(
+                    page_content,
+                    doc_id,
+                    page_number,
+                    section_stack,
+                    page_content.is_scanned,
+                )
             )
-            chunks.extend(page_chunks)
+        return chunks, parser.name, len(pages)
 
-        return chunks
+    def _index_chunks(
+        self,
+        chunks: list[Chunk],
+        doc_id: str,
+        filename: str,
+        page_count: int,
+        importance: str,
+        parse_mode: str,
+        source: str = "",
+    ) -> DocumentUploadResponse:
+        """embedding → FAISS → DocumentInfo → save → 响应（ingest / ingest_manual 共用尾部）。"""
+        # 生成 embedding
+        if chunks:
+            texts = [c.text for c in chunks]
+            embeddings = self.embedding_fn(texts)
+            self._ensure_index()
+            ids: list[int] = []
+            for chunk, emb in zip(chunks, embeddings):
+                chunk.embedding = np.ascontiguousarray(emb, dtype=np.float32)
+                chunk.faiss_id = self._next_faiss_id
+                ids.append(chunk.faiss_id)
+                self._next_faiss_id += 1
 
-    @staticmethod
-    def _is_scanned_page(page: fitz.Page) -> bool:
-        text = page.get_text().strip()
-        has_images = bool(page.get_images())
-        return len(text) < _SCANNED_TEXT_THRESHOLD and has_images
+                self._chunks[chunk.chunk_id] = chunk
+                self._faiss_id_to_chunk_id[chunk.faiss_id] = chunk.chunk_id
+                self._chunk_id_to_faiss_id[chunk.chunk_id] = chunk.faiss_id
 
-    def _ocr_page(self, page: fitz.Page, page_number: int) -> PageContent:
-        pix = page.get_pixmap(dpi=300)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        return self.ocr_engine.process_page(img, page_number=page_number)
+            ids_arr = np.array(ids, dtype=np.int64)
+            embs_arr = np.ascontiguousarray(embeddings.astype(np.float32))
+            self._index.add_with_ids(embs_arr, ids_arr)
 
-    def _extract_text_page(self, page: fitz.Page, page_number: int) -> PageContent:
-        # 表格检测
-        table_finder = page.find_tables()
-        table_blocks: list[TableBlock] = []
-        table_bboxes: list[tuple[float, float, float, float]] = []
-        for table in table_finder.tables:
-            rows = table.extract()
-            if not rows:
-                continue
-            bbox = tuple(table.bbox)
-            table_blocks.append(TableBlock(rows=rows, bbox=bbox))
-            table_bboxes.append(bbox)
+        doc_info = DocumentInfo(
+            doc_id=doc_id,
+            file_name=filename,
+            page_count=page_count,
+            chunk_count=len(chunks),
+            created_at=datetime.now().isoformat(),
+            importance=importance,
+            parse_mode=parse_mode,
+            source=source,
+        )
+        self._documents[doc_id] = doc_info
+        self.save()
 
-        # 文本块，过滤掉与表格区域高度重叠的块
-        raw_blocks = page.get_text("blocks")
-        text_blocks: list[TextBlock] = []
-        for block in raw_blocks:
-            x0, y0, x1, y1, text, _, _ = block
-            if not text or not text.strip():
-                continue
-            bbox = (x0, y0, x1, y1)
-            if self._bbox_overlaps_any(bbox, table_bboxes):
-                continue
-            text_blocks.append(TextBlock(text=text.strip(), bbox=bbox))
-
-        return PageContent(text_blocks=text_blocks, table_blocks=table_blocks)
-
-    @staticmethod
-    def _bbox_overlaps_any(
-        bbox: tuple[float, float, float, float],
-        others: list[tuple[float, float, float, float]],
-        ratio_threshold: float = 0.5,
-    ) -> bool:
-        x0, y0, x1, y1 = bbox
-        area = max((x1 - x0) * (y1 - y0), 1e-9)
-        for ox0, oy0, ox1, oy1 in others:
-            ix0, iy0 = max(x0, ox0), max(y0, oy0)
-            ix1, iy1 = min(x1, ox1), min(y1, oy1)
-            if ix1 <= ix0 or iy1 <= iy0:
-                continue
-            inter = (ix1 - ix0) * (iy1 - iy0)
-            if inter / area >= ratio_threshold:
-                return True
-        return False
+        return DocumentUploadResponse(
+            doc_id=doc_id,
+            file_name=filename,
+            page_count=page_count,
+            chunk_count=len(chunks),
+            uploaded_at=doc_info.created_at,
+            importance=importance,
+            parse_mode=parse_mode,
+        )
 
     # ------------------------------------------------------------------
     # 内部：chunk 组装

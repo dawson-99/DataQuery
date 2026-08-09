@@ -3,7 +3,8 @@
 
 覆盖 src/rule_review/router.py 的全部端点：
 - POST /v1/rule-review（流式/非流式）
-- POST /v1/rule-review/documents（上传）
+- POST /v1/rule-review/documents（上传，含解析分层 importance/parse_mode）
+- POST /v1/rule-review/documents/manual（手动入库，解析分层新增）
 - GET  /v1/rule-review/documents（列表）
 - DELETE /v1/rule-review/documents/{doc_id}（删除）
 - GET  /v1/rule-review/health（健康检查）
@@ -113,6 +114,18 @@ def client(tmp_path: Path):
 
 
 @pytest.fixture
+def stub_pipeline(monkeypatch):
+    """用 mock pipeline 替换 router._get_pipeline。
+
+    真实 pipeline 构造会加载 bge-m3 embedding 模型并访问 HuggingFace
+    （离线/沙箱环境会挂起），文档管理端点的 BM25 刷新只需 mock 即可。
+    """
+    monkeypatch.setattr(
+        "src.rule_review.router._get_pipeline", lambda: _mock_pipeline()
+    )
+
+
+@pytest.fixture
 def mock_client():
     """使用 mock pipeline 的 TestClient。"""
     import src.rule_review.router as rmod
@@ -175,6 +188,139 @@ class TestDocumentUpload:
             files={"file": (None, io.BytesIO(b""), "application/pdf")},
         )
         assert response.status_code == 400 or response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 文档上传（解析分层：importance / parse_mode）
+# ---------------------------------------------------------------------------
+
+
+class TestDocumentUploadTiers:
+    """解析分层参数：importance / parse_mode 透传与校验。
+
+    使用 stub_pipeline 避免真实 pipeline 的模型加载/网络依赖。
+    """
+
+    def test_upload_with_importance_and_parse_mode(self, client, stub_pipeline):
+        pdf_bytes = _make_test_pdf_bytes()
+        response = client.post(
+            "/v1/rule-review/documents",
+            files={"file": ("rule.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            data={"importance": "high", "parse_mode": "pymupdf"},
+        )
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["importance"] == "high"
+        assert data["parse_mode"] == "pymupdf"
+
+    def test_upload_default_tier_fields(self, client, stub_pipeline):
+        pdf_bytes = _make_test_pdf_bytes()
+        response = client.post(
+            "/v1/rule-review/documents",
+            files={"file": ("rule.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+        )
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["importance"] == "low"
+        assert data["parse_mode"] == "pymupdf"  # 未安装 MinerU 时 auto 降级
+
+    def test_upload_invalid_importance(self, client, stub_pipeline):
+        pdf_bytes = _make_test_pdf_bytes()
+        response = client.post(
+            "/v1/rule-review/documents",
+            files={"file": ("rule.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            data={"importance": "weird"},
+        )
+        assert response.status_code == 400
+        assert "importance" in response.json()["detail"]
+
+    def test_upload_invalid_parse_mode(self, client, stub_pipeline):
+        pdf_bytes = _make_test_pdf_bytes()
+        response = client.post(
+            "/v1/rule-review/documents",
+            files={"file": ("rule.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            data={"parse_mode": "bogus"},
+        )
+        assert response.status_code == 400
+        assert "parse_mode" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 手动入库（重要政策问答表格，POST /documents/manual）
+# ---------------------------------------------------------------------------
+
+
+class TestManualUpload:
+    """手动入库端点：重要政策问答表格以 Markdown 直接入库。"""
+
+    MANUAL_MARKDOWN = (
+        "## 第2条 价格上限\n\n下表为各省日前现货出清电价上限：\n\n"
+        "| 省份 | 电价上限(元/MWh) |\n|---|---|\n| 冀北 | 760 |\n| 山西 | 780 |"
+    )
+
+    def test_manual_upload_success(self, client, stub_pipeline):
+        response = client.post(
+            "/v1/rule-review/documents/manual",
+            json={
+                "markdown": self.MANUAL_MARKDOWN,
+                "filename": "价格上限表.md",
+                "importance": "high",
+                "source": "政策问答表格人工整理",
+            },
+        )
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["parse_mode"] == "manual"
+        assert data["importance"] == "high"
+        assert data["chunk_count"] > 0
+
+        # 列表可见
+        list_resp = client.get("/v1/rule-review/documents")
+        docs = list_resp.json()["data"]
+        assert any(
+            d["doc_id"] == data["doc_id"] and d["parse_mode"] == "manual"
+            for d in docs
+        )
+
+    def test_manual_upload_default_importance_high(self, client, stub_pipeline):
+        response = client.post(
+            "/v1/rule-review/documents/manual",
+            json={"markdown": "# 第1条 测试\n\n正文内容"},
+        )
+        assert response.status_code == 201
+        assert response.json()["data"]["importance"] == "high"
+
+    def test_manual_upload_empty_markdown(self, client, stub_pipeline):
+        response = client.post(
+            "/v1/rule-review/documents/manual",
+            json={"markdown": "   "},
+        )
+        assert response.status_code == 400
+        assert "markdown" in response.json()["detail"]
+
+    def test_manual_upload_invalid_importance(self, client, stub_pipeline):
+        response = client.post(
+            "/v1/rule-review/documents/manual",
+            json={"markdown": "正文", "importance": "weird"},
+        )
+        assert response.status_code == 400
+        assert "importance" in response.json()["detail"]
+
+    def test_manual_upload_triggers_bm25_refresh(self, client, monkeypatch):
+        """手动入库后必须刷新 BM25（与 PDF 上传端点一致）。"""
+        import src.rule_review.router as rmod
+
+        refresh_mock = MagicMock()
+        pipeline = _mock_pipeline()
+        pipeline.retriever.refresh_bm25 = refresh_mock
+        monkeypatch.setattr(rmod, "_get_pipeline", lambda: pipeline)
+
+        response = client.post(
+            "/v1/rule-review/documents/manual",
+            json={"markdown": self.MANUAL_MARKDOWN},
+        )
+        assert response.status_code == 201
+        refresh_mock.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -21,10 +21,15 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.config import settings
 from src.rule_review.audit import AuditStore, get_default_audit_store
 from src.rule_review.document_store import DocumentStore
 from src.rule_review.pipeline import RuleReviewPipeline, get_default_pipeline
-from src.rule_review.schemas import DocumentUploadResponse, RuleReviewRequest
+from src.rule_review.schemas import (
+    DocumentUploadResponse,
+    ManualDocumentUploadRequest,
+    RuleReviewRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +45,17 @@ _document_store: Optional[DocumentStore] = None
 
 
 def _get_pipeline() -> RuleReviewPipeline:
+    """获取规则审查编排器单例。
+
+    默认注入 AuditStore（RULE_REVIEW_AUDIT_ENABLED=true）：
+    每次审查记录写入 data/audit_logs/，含 tool_executions，供审计追溯与训练数据收集。
+    """
     global _pipeline
     if _pipeline is None:
-        _pipeline = get_default_pipeline()
+        if settings.RULE_REVIEW_AUDIT_ENABLED:
+            _pipeline = RuleReviewPipeline(audit_store=get_default_audit_store())
+        else:
+            _pipeline = get_default_pipeline()
     return _pipeline
 
 
@@ -124,13 +137,33 @@ async def _generate_sse(request: RuleReviewRequest):
 async def upload_document(
     file: UploadFile = File(..., description="规则 PDF 文件"),
     force: bool = Form(default=False, description="是否覆盖同名文档"),
+    importance: str = Form(default="low", description="文档重要程度 high | low"),
+    parse_mode: str = Form(
+        default="auto", description="解析方式 auto | mineru | pymupdf"
+    ),
 ) -> JSONResponse:
     """上传规则 PDF 文件，自动完成解析、chunk 切分、embedding 和 FAISS 索引。
 
     支持文本 PDF 和扫描版 PDF（需安装 PaddleOCR）。
 
-    返回文档元信息，包含 chunk_count 等。
+    解析分层（见 docs/rule-review.md §4.3）：
+    - 相对不重要的文档（importance=low）走本地 MinerU 解析（未安装时降级 pymupdf）
+    - 重要的政策问答表格请使用 POST /documents/manual 手动入库
+    - API 解析为已弃用历史方案（成本高、表格识别不准），不再提供
+
+    返回文档元信息，包含 chunk_count / importance / parse_mode 等。
     """
+    # 解析分层参数校验
+    if importance not in ("high", "low"):
+        raise HTTPException(
+            status_code=400, detail=f"importance 仅支持 high/low，收到: {importance}"
+        )
+    if parse_mode not in ("auto", "mineru", "pymupdf"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"parse_mode 仅支持 auto/mineru/pymupdf，收到: {parse_mode}",
+        )
+
     # 校验文件类型
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
@@ -151,18 +184,24 @@ async def upload_document(
             detail=f"文件过大 ({size_mb:.1f}MB)，最大允许 {_MAX_UPLOAD_SIZE_MB}MB",
         )
 
-    # 解析并入库
+    # 解析并入库（分层：auto/mineru/pymupdf）
     try:
         store = _get_document_store()
-        resp = store.ingest(content, filename=file.filename)
+        resp = store.ingest(
+            content,
+            filename=file.filename,
+            importance=importance,
+            parse_mode=parse_mode,
+        )
 
         # 刷新 HybridRetriever 的 BM25 索引
         pipeline = _get_pipeline()
         pipeline.retriever.refresh_bm25()
 
         logger.info(
-            "[router] 文档上传成功: %s, %d 页, %d chunks",
+            "[router] 文档上传成功: %s, %d 页, %d chunks, parse_mode=%s, importance=%s",
             resp.file_name, resp.page_count, resp.chunk_count,
+            resp.parse_mode, resp.importance,
         )
         return JSONResponse(
             content={"status": "success", "data": resp.model_dump()},
@@ -171,6 +210,53 @@ async def upload_document(
     except Exception as e:
         logger.error(f"[router] 文档上传失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文档解析失败: {str(e)}")
+
+
+@router.post("/documents/manual", summary="手动入库规则文档（Markdown）")
+async def upload_document_manual(
+    req: ManualDocumentUploadRequest,
+) -> JSONResponse:
+    """重要政策问答/表格手动入库：提交整理好的 Markdown，直接建立索引。
+
+    与 PDF 上传走完全相同的 chunk 组装与索引路径，但不经过 PDF 解析，
+    表格识别准确率 100%（见 docs/rule-review.md §4.3 评测方法）。
+
+    示例:
+        {"markdown": "## 第2条 价格上限\\n| 省份 | 电价上限(元/MWh) |\\n|---|---|\\n| 冀北 | 760 |",
+         "filename": "价格上限表.md", "importance": "high", "source": "政策问答表格人工整理"}
+    """
+    if req.importance not in ("high", "low"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"importance 仅支持 high/low，收到: {req.importance}",
+        )
+    if not req.markdown or not req.markdown.strip():
+        raise HTTPException(status_code=400, detail="markdown 内容不能为空")
+
+    try:
+        store = _get_document_store()
+        resp = store.ingest_manual(
+            req.markdown,
+            filename=req.filename or "manual.md",
+            importance=req.importance,
+            source=req.source,
+        )
+
+        # 刷新 HybridRetriever 的 BM25 索引（与上传端点一致）
+        pipeline = _get_pipeline()
+        pipeline.retriever.refresh_bm25()
+
+        logger.info(
+            "[router] 手动入库成功: %s, %d chunks, importance=%s",
+            resp.file_name, resp.chunk_count, resp.importance,
+        )
+        return JSONResponse(
+            content={"status": "success", "data": resp.model_dump()},
+            status_code=201,
+        )
+    except Exception as e:
+        logger.error(f"[router] 手动入库失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"手动入库失败: {str(e)}")
 
 
 @router.get("/documents", summary="列出已入库文档")
@@ -188,6 +274,9 @@ async def list_documents() -> JSONResponse:
                     "page_count": d.page_count,
                     "chunk_count": d.chunk_count,
                     "created_at": d.created_at,
+                    "importance": d.importance,
+                    "parse_mode": d.parse_mode,
+                    "source": d.source,
                 }
                 for d in docs
             ],

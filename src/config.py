@@ -145,9 +145,24 @@ class Settings:
         self.RULE_DOCUMENTS_DIR: str = os.getenv("RULE_DOCUMENTS_DIR", "data/rule_documents")
         self.RULE_INDEX_DIR: str = os.getenv("RULE_INDEX_DIR", "data/rule_index")
 
+        # ====== 规则审查 PDF 解析分层配置（见 docs/rule-review.md §4.3）======
+        # 默认关闭：未安装 mineru 时不尝试初始化（避免加载模型的开销与失败日志）；
+        # 生产环境安装 mineru 后置 RULE_REVIEW_MINERU_ENABLED=true
+        self.RULE_REVIEW_MINERU_ENABLED: bool = os.getenv(
+            "RULE_REVIEW_MINERU_ENABLED", "false"
+        ).lower() in ("true", "1", "yes")
+        # auto: MinerU 可用则用之，否则 pymupdf；mineru: 强制 MinerU（不可用降级 pymupdf）；pymupdf: 恒 pymupdf
+        self.RULE_REVIEW_PARSE_MODE: str = os.getenv("RULE_REVIEW_PARSE_MODE", "auto")
+
         # Corrective-RAG 回环：Judge 检出幻觉/遗漏时触发扩大检索 + 重新生成/校验
         self.RULE_REVIEW_CORRECTIVE_ENABLED: bool = os.getenv(
             "RULE_REVIEW_CORRECTIVE_ENABLED", "true"
+        ).lower() in ("true", "1", "yes")
+
+        # 审计落盘：开启后每次审查记录写入 data/audit_logs/
+        # （含 tool_executions，为训练数据收集提供真实轨迹）
+        self.RULE_REVIEW_AUDIT_ENABLED: bool = os.getenv(
+            "RULE_REVIEW_AUDIT_ENABLED", "true"
         ).lower() in ("true", "1", "yes")
 
         # ====== Redis 缓存配置（Phase 3）======

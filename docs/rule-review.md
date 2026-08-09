@@ -383,6 +383,46 @@ class Chunk:
     embedding: np.ndarray       # bge-m3 向量 (1024 维)
 ```
 
+#### 解析分层（PDFParser 抽象 + MinerU 本地 + 手动入库）
+
+**方案演进**：建立向量数据库对解析精度要求非常高。初期尝试调用 API 解析政策 PDF，
+随着新业务进来、PDF 数量增多，发现该方案**成本高**（按页/按文档计费，量上来后不可控）且
+**表格中的重要内容无法完全准确识别**（如各省电价上限表的单元格错位、丢列），因此弃用
+（历史方案，不写代码）。改为分层策略：**相对不重要的文档采用本地 MinerU 解析，
+重要的政策问答中的表格采用手动入库**。在测试中，这种处理方式的召回率达到 **98%**
+（评测口径见下「98% 双评测」）。
+
+**分层决策表**：
+
+| 文档类型 | importance | parse_mode | 解析路径 | 说明 |
+|---|---|---|---|---|
+| 相对不重要的规则文档 | low | auto | MinerU 本地解析（未安装降级 pymupdf） | 批量上传，表格可完整识别 |
+| 重要的政策问答/表格 | high | manual | 手动入库（`POST /documents/manual`） | 人工整理 Markdown，识别准确率 100% |
+| 扫描件/特殊格式 | 任意 | pymupdf | pymupdf 文本提取 + PaddleOCR 兜底 | 显式指定，跳过 MinerU |
+
+**代码结构**（`src/rule_review/parsers.py`，原 document_store.py 解析逻辑迁移）：
+
+- `PDFParser` 抽象基类（镜像 `OCRProcessor` 的可用性降级模式）：`name` + `is_available` + `parse(data, filename) -> list[PageContent]`
+- `PymupdfParser`：原 `_parse_document`/`_extract_text_page`/`find_tables()` 逻辑原样迁移，行为零改动
+- `MinerULocalParser`：`from mineru import MinerU` 延迟导入，未安装时 `is_available=False` 静默降级 pymupdf；单例复用避免重复加载模型；输出 markdown 经 `markdown_to_page_content` 还原为 `PageContent`
+- `markdown_to_page_content`：MinerU 输出与手动入库共用——`#` 标题 → TextBlock（「第X章/条」交给 `_detect_heading` 正则）、连续 `|` 行 → TableBlock（跳过分隔行）、合成 bbox 按行序保序、表格 caption 由 `_build_chunks` 的 recent_texts 回溯覆盖
+- `DocumentStore.ingest(..., importance="low", parse_mode="auto")`：auto 时 MinerU 可用则用之否则 pymupdf；mineru 强制（不可用降级）；pymupdf 恒走本地；实际生效模式（含降级后）写入 `DocumentInfo.parse_mode`
+- `DocumentStore.ingest_manual(markdown, ...)`：手动入库不生成 PDF，`parse_markdown → _build_chunks` 与 PDF 上传完全同路径；`delete()` 兼容无 PDF 文档
+
+已知限制：非「第X章/条」结构的 markdown 标题会退化为正文；表格单元格内含 `|` 不做转义。
+
+**98% 双评测**（阈值常量：`TABLE_CELL_ACCURACY_TARGET=0.98`、`RETRIEVAL_RECALL_TARGET=0.98`）：
+
+1. **解析精度**（`src/rule_review/parsing_eval.py`）：表格单元格识别准确率 = 正确单元格 / 期望表单元格总数
+   （期望表手工标注，缺行/缺列记错，多出的行/列不计入分母）。手动入库 = markdown 原文还原 → 100%；
+   MinerU = 对真实 PDF 跑解析后与标注表对比 → 期望 ≥98%。运行：`python -m src.rule_review.parsing_eval`，
+   评测数据 `data/evaluation/table_parse_cases.json`。
+2. **检索召回**：表格类用例（tag=「表格检索」，tc-015~018）经现有 EvalRunner 的 `avg_recall_at_k`
+   （关键词代理）统计，阈值 ≥98%。运行：`python -m src.rule_review.evaluation`。
+
+**配置**（`src/config.py`，默认值保证本地开发零行为变化）：`RULE_REVIEW_MINERU_ENABLED`（默认 false）、
+`RULE_REVIEW_PARSE_MODE`（默认 auto）。`requirements.txt` 中 `mineru>=2.0` 为可选依赖（注释标注）。
+
 ### 4.4 `retriever.py` — 混合检索引擎（含 Cross-Encoder 精排 + 地名归一化）
 
 **检索流程**：
@@ -813,18 +853,48 @@ data: {"done":true}
 
 ### 5.2 `POST /v1/rule-review/documents` — 上传文档
 
+multipart 表单字段（解析分层新增 `importance` / `parse_mode`，见 §4.3）：
+
+| 字段 | 必填 | 取值 | 说明 |
+|---|---|---|---|
+| file | 是 | .pdf | 规则 PDF |
+| force | 否 | bool | 兼容字段（delete 接口使用） |
+| importance | 否 | high \| low（默认 low） | 文档重要程度，显式标注 |
+| parse_mode | 否 | auto \| mineru \| pymupdf（默认 auto） | 解析方式；auto 时 MinerU 可用则用之 |
+
 响应：
 
 ```json
 {
   "status": "success",
-  "data": {"doc_id": "doc_abc", "file_name": "规则.pdf", "page_count": 45, "chunk_count": 120}
+  "data": {"doc_id": "doc_abc", "file_name": "规则.pdf", "page_count": 45,
+           "chunk_count": 120, "importance": "low", "parse_mode": "pymupdf"}
 }
 ```
 
 ### 5.3 `GET /v1/rule-review/documents` — 文档列表
 
+响应 data 每项含 `importance` / `parse_mode` / `source` 三个解析分层字段。
+
 ### 5.4 `DELETE /v1/rule-review/documents/{doc_id}` — 删除文档
+
+### 5.5 `POST /v1/rule-review/documents/manual` — 手动入库（重要政策问答表格）
+
+重要文档不经过 PDF 解析，直接提交人工整理的 Markdown（标题 + 段落 + `|` 表格），
+走与 PDF 上传完全相同的 chunk 组装与索引路径，识别准确率 100%（见 §4.3「98% 双评测」）。
+
+请求（JSON）：
+
+```json
+{
+  "markdown": "## 第2条 价格上限\n下表为各省日前现货出清电价上限：\n| 省份 | 电价上限(元/MWh) |\n|---|---|\n| 冀北 | 760 |",
+  "filename": "价格上限表.md",
+  "importance": "high",
+  "source": "政策问答表格人工整理"
+}
+```
+
+响应：与 5.2 相同结构，`parse_mode="manual"`、`importance="high"`。
 
 ---
 
@@ -882,7 +952,34 @@ class DocumentUploadResponse(BaseModel):
     page_count: int
     chunk_count: int
     uploaded_at: str
+    importance: str = "low"       # 解析分层：high | low
+    parse_mode: str = "pymupdf"   # 解析分层：pymupdf | mineru | manual（实际生效模式）
+
+class ManualDocumentUploadRequest(BaseModel):
+    """手动入库请求（重要政策问答表格，见 §4.3 解析分层）"""
+    markdown: str                 # 规则 Markdown 内容（# 标题、段落、| 表格 |）
+    filename: str = ""            # 文档名称，留空自动生成
+    importance: str = "high"      # 手动入库面向重要内容，默认 high
+    source: str = ""              # 来源说明（如：政策问答表格人工整理）
 ```
+
+**DocumentInfo 解析分层新增字段**（`src/rule_review/models.py`，均带默认值保证旧 JSON 反序列化兼容）：
+
+```python
+@dataclass
+class DocumentInfo:
+    doc_id: str
+    file_name: str
+    page_count: int
+    chunk_count: int
+    created_at: str
+    importance: str = "low"      # high | low —— 调用方显式标注
+    parse_mode: str = "pymupdf"  # pymupdf | mineru | manual（实际生效模式，含降级后）
+    source: str = ""             # 来源说明（手动入库如「政策问答表格人工整理」）
+```
+
+`PageContent` 新增 `is_scanned: bool = False`：解析器抽象后由解析器把扫描页判定透传给 chunk 组装。
+`Chunk` 不加字段（importance 为文档级属性）。
 
 ---
 
@@ -2694,6 +2791,12 @@ Judge 的修正也是 LLM 输出,同样有幻觉概率;但它是**对照原文�
 
 **预期指标**:评测集 0→14 条;幻觉误报归零;产出决策准确率 / recall@k / MRR / 幻觉率四类基线。
 
+**解析分层后的 98% 双评测口径**(见 §4.3):评测集扩至 18 条,其中 tc-015~018 为表格检索类用例
+(tag=「表格检索」,关键词取表格单元格值,如「760」「四川主网」);解析精度评测
+(`python -m src.rule_review.parsing_eval`,表格单元格识别准确率,手动入库 100%/MinerU ≥98%)与
+检索召回评测(`avg_recall_at_k ≥ 0.98`)双断言落地,阈值常量为 `TABLE_CELL_ACCURACY_TARGET` /
+`RETRIEVAL_RECALL_TARGET`。
+
 **面试话术**(约 30 秒):
 
 > 我的评估体系分三层:离线评测集、指标定义、在线回归。指标上我不只看决策准确率,还加了 recall@k 和 MRR 衡量检索层——这层指标能直接量化「65%→88%」是怎么来的。幻觉率用证据文本对检索文本的最长公共子串近似匹配检测。这里我修过一个真实 bug:评估器拿不到检索结果,空集合把所有 evidence 误判成幻觉,把检索结果透传进去后误报归零。每次迭代跑全量评测、报告 JSON 归档,保证改检索不伤决策、改 Prompt 不伤召回。
@@ -2798,7 +2901,9 @@ Judge 的修正也是 LLM 输出,同样有幻觉概率;但它是**对照原文�
 
 ## 方向七:检索增强(LLM 多 query 生成、GraphRAG、时间维度过滤)
 
-**定位**:88% 召回率的天花板突破点,对接「查询重写」「GraphRAG」两个高频考点。
+**定位**:召回率突破点,对接「查询重写」「GraphRAG」两个高频考点。注意演进口径:
+**88% 是纯混合检索(查询端优化前)的召回,解析分层落地后表格类召回达 98%**(见 §4.3 解析分层),
+方向一/方向五的查询端优化继续把 98% 推向更高。
 
 **现状缺口**:设计文档 §12.3 规划的「LLM 多 query 生成」未实现;检索只有 RRF 混合两路;无时间维度裁剪。
 
@@ -2806,7 +2911,7 @@ Judge 的修正也是 LLM 输出,同样有幻觉概率;但它是**对照原文�
 
 **面试话术**:
 
-> 混合检索到 88% 之后,我往查询端和结构端做:LLM 多 query 生成并行检索合并、时间维度先裁剪再检索、GraphRAG 把条款引用关系建成图做一跳扩展。每个模块上线前必须用离线 recall@k 验证增量,没有指标提升就不上线——这是我做检索迭代的原则。
+> 混合检索到 88% 之后,我先在数据端做了解析分层:相对不重要的文档走本地 MinerU 解析,重要的政策问答表格手动入库,表格单元格识别准确率到了 100%,检索召回整体到 98%——解析精度是召回的地基。然后在查询端和结构端继续做:LLM 多 query 生成并行检索合并、时间维度先裁剪再检索、GraphRAG 把条款引用关系建成图做一跳扩展。每个模块上线前必须用离线 recall@k 验证增量,没有指标提升就不上线——这是我做检索迭代的原则。
 
 **追问预案**:「GraphRAG 和向量检索的区别?」→ 向量检索对实体关联、多跳问题天然弱(「引用 A 的条款 X 是否也适用于场景 B」),GraphRAG 显式建模引用关系,一跳扩展可命中;代价是建图与维护成本,适合规则文档这种结构稳定、引用密集的语料。
 

@@ -73,13 +73,29 @@ class ToolCallLog(BaseModel):
 
 
 class DocumentUploadResponse(BaseModel):
-    """文档上传响应"""
+    """文档上传/手动入库响应"""
 
     doc_id: str
     file_name: str
     page_count: int = Field(ge=0)
     chunk_count: int = Field(ge=0)
     uploaded_at: str
+    # 解析分层新增字段（见 docs/rule-review.md §4.3）
+    importance: str = Field(default="low", description="high | low")
+    parse_mode: str = Field(default="pymupdf", description="pymupdf | mineru | manual")
+
+
+class ManualDocumentUploadRequest(BaseModel):
+    """手动入库请求：直接提交整理好的 Markdown 规则内容。
+
+    面向重要的政策问答/表格：人工整理保证识别准确率 100%（见 §4.3 解析分层），
+    不经过 PDF 解析，走与 PDF 上传完全相同的 chunk 与索引路径。
+    """
+
+    markdown: str = Field(description="规则 Markdown 内容（# 标题、段落、| 表格 |）")
+    filename: str = Field(default="", description="文档名称，留空自动生成")
+    importance: str = Field(default="high", description="high | low")
+    source: str = Field(default="", description="来源说明（如：政策问答表格人工整理）")
 
 
 class ClarificationResponse(BaseModel):

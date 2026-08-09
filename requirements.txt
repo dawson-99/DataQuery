@@ -25,6 +25,7 @@ pandas>=2.2.0
 # RAG / 文档解析
 # ============================================================
 pymupdf>=1.24.0              # PDF 文本 + 表格提取
+# mineru>=2.0                # 本地 MinerU 解析（可选；未安装自动降级 pymupdf，默认 RULE_REVIEW_MINERU_ENABLED=false，见 docs/rule-review.md §4.3）
 faiss-cpu>=1.8.0             # 向量相似度索引
 sentence-transformers>=3.0.0 # bge-m3 嵌入模型
 numpy>=1.24.0                # 向量数组

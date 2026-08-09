@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEST_CASES_PATH = "data/evaluation/test_cases.json"
 DEFAULT_REPORTS_DIR = "data/evaluation/reports"
 
+# 检索召回目标：表格类用例 recall@k 平均值断言阈值（98% 口径见 docs/rule-review.md §4.3
+# 「98% 双评测」：解析精度评测见 parsing_eval.py）
+RETRIEVAL_RECALL_TARGET = 0.98
+# 表格检索类用例 tag（tc-015~018 带此 tag，98% 断言只统计该子集）
+TABLE_RECALL_TAG = "表格检索"
+
 
 # ---------------------------------------------------------------------------
 # 数据模型

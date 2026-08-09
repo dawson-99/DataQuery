@@ -41,7 +41,7 @@ uvicorn app:app --host 0.0.0.0 --port 6066 --reload
 
 ### 测试
 
-自动化测试集中在 **规则审查子系统**：`tests/` 下 13 个 `test_rule_review_*.py`，覆盖 pipeline、retriever、document_store、judge、tool_executor、tool_validation、router、audit、query_rewriter、sandbox_utils、generator 的单元测试、基础设施测试（`test_rule_review_infrastructure.py`）与端到端测试（`test_rule_review_e2e.py`）。**查询链路（`src/workflow/`、`src/agents/`、`src/utils/aggregation_tools.py` 等）尚无测试覆盖**，这些纯函数适合优先补充。
+自动化测试集中在 **规则审查子系统**：`tests/` 下 14 个 `test_rule_review_*.py`，覆盖 pipeline、retriever、document_store、parser_tiers（解析分层：MinerU 降级/手动入库/98% 双评测断言）、judge、tool_executor、tool_validation、router、audit、query_rewriter、sandbox_utils、generator 的单元测试、基础设施测试（`test_rule_review_infrastructure.py`）与端到端测试（`test_rule_review_e2e.py`）。**查询链路（`src/workflow/`、`src/agents/`、`src/utils/aggregation_tools.py` 等）尚无测试覆盖**，这些纯函数适合优先补充。
 
 ```bash
 # 运行全部测试
@@ -218,7 +218,10 @@ LLM 直接调用（不走 LangChain Agent），使用 `SystemMessage + HumanMess
 
 **关键模块**（均为 200–900 行量级，各司其职）：
 
-- `document_store.py`（923 行）— 文档解析（pymupdf 提取 + OCR 兜底）、切块、入库；`Chunk`/`DocumentInfo` 模型
+- `document_store.py` — 文档存储与索引编排（解析分层路由 + 切块 + 入库 + `ingest_manual` 手动入库）；`Chunk`/`DocumentInfo` 模型（含 importance/parse_mode/source）在 `models.py`
+- `parsers.py` — **解析分层**（docs §4.3）：`PDFParser` 抽象 + `PymupdfParser`（pymupdf 提取 + OCR 兜底）+ `MinerULocalParser`（本地 MinerU，未安装降级 pymupdf）+ `markdown_to_page_content`（MinerU 输出与手动入库共用）；OCR 抽象亦在此
+- `models.py` — 数据模型（TextBlock/TableBlock/PageContent/Chunk/DocumentInfo/ChunkSearchResult），从 document_store 拆出避免循环导入
+- `parsing_eval.py` — 解析精度评测（表格单元格识别准确率，`TABLE_CELL_ACCURACY_TARGET=0.98`），CLI `python -m src.rule_review.parsing_eval`
 - `retriever.py`（925 行）— 混合检索：BM25（bm25s）+ bge-m3 向量（经 DocumentStore）+ Cross-Encoder 精排（`rerank_score`）；地名复用 `data/env_variables/data_standard.json` 归一化
 - `pipeline.py`（795 行）— 编排器，`check_clarification_needed` / `split_if_multi_document` 等纯函数可独立测试
 - `tool_executor.py`（761 行）— Tool 系统：解析并执行 LLM 生成的 tool_call，经 `sandbox_utils.py`（438 行，封装现有 `PythonSandbox`）安全执行
@@ -238,7 +241,8 @@ LLM 直接调用（不走 LangChain Agent），使用 `SystemMessage + HumanMess
 | 方法/路径 | 用途 |
 |---|---|
 | `POST /v1/rule-review` | 规则审查查询（SSE 流式，带逐阶段进度） |
-| `POST /v1/rule-review/documents` | 上传规则文档（multipart） |
+| `POST /v1/rule-review/documents` | 上传规则文档（multipart，含 `importance`/`parse_mode` 解析分层字段） |
+| `POST /v1/rule-review/documents/manual` | 手动入库重要政策问答表格（JSON markdown，见 docs §5.5） |
 | `GET /v1/rule-review/documents` / `DELETE /v1/rule-review/documents/{doc_id}` | 文档管理 |
 | `GET /v1/rule-review/health` | 健康检查（docker-compose 探活依赖） |
 | `GET /v1/rule-review/audit/{query_id}` / `GET /v1/rule-review/audit/sample/{date}` / `GET /v1/rule-review/audit/stats` / `DELETE /v1/rule-review/audit/{query_id}` | 审计追溯与抽样质检 |
