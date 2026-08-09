@@ -6,7 +6,7 @@
   score = supported_claims / total_claims
 - Answer Relevancy（答案相关性）: 回答是否切题，LLM judge 直接打分 0-1
   （简化版；官方做法为「由回答反生成若干问题 + 嵌入相似度」，需加载 bge-m3，
-  升级路径见 docs/rule-review-optimization.md 方向九）
+  升级路径见 docs/rule-review.md 第三部分 方向九）
 - Context Precision（上下文精度）: 检索结果中相关 chunk 是否排在前面
   score = Σ_k(P@k × rel_k) / Σ_k rel_k，其中 P@k = |{j≤k: rel_j}| / k
   （全不相关 → 0.0，RAGAS 口径）
@@ -25,7 +25,7 @@
 - details: dict，含该指标的判定明细（claims/verdicts/sentences）与 error 信息
 
 评测编排（EvalRunner 集成）与整体评估流程见 evaluation.py；
-指标口径与面试话术见 docs/rule-review-optimization.md「方向九」。
+指标口径与面试话术见 docs/rule-review.md 第三部分「方向九」。
 """
 
 from __future__ import annotations

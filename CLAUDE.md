@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 当前仅实现了 **省间应急调度交易信息（日前）查询** 这一个业务意图；意图识别 Prompt 虽然按多业务域设计，但 `src/workflow/workflow_router.py` 的 `WORKFLOW_REGISTRY` 中只注册了该意图与澄清工作流。
 
+第二套业务能力是 **规则审查子系统**（`src/rule_review/`，前缀 `/v1/rule-review`）：回答「某交易/申报是否符合电力交易规则」类合规判断问题，走 9 阶段 pipeline（改写→澄清→拆分→检索→生成→Tool→Judge→SSE），配套文档管理、审计追溯与离线评估体系，详见下文「规则审查子系统」章节。
+
 ## 技术栈
 
 - **Python**: 3.11+
@@ -16,6 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Agent 框架**: LangChain / LangGraph（`create_agent` + `@before_model`/`@after_model` 中间件），含 `langchain-qwq`（通义千问 LangChain 集成）
 - **数据计算**: pandas + 纯 Python 聚合（不依赖 LLM）
 - **HTTP**: httpx（共享连接池，对外 API 调用）+ aiohttp（内网模型流式调用）
+- **规则审查 RAG**: pymupdf（文档解析）+ bm25s（BM25 检索）+ sentence-transformers / bge-m3（向量检索）+ faiss-cpu（本地索引，Phase 4 起可被 pymilvus 替换）
+- **基础设施**: redis + pymilvus + psycopg2-binary（docker-compose 编排，均支持连接失败静默降级）
 
 > **注意**: `httpx` 在代码中使用但**未列入 `requirements.txt`**，它作为 `langchain-core` 的传递依赖被安装。如遇导入错误，手动 `pip install httpx`。
 
@@ -37,17 +41,17 @@ uvicorn app:app --host 0.0.0.0 --port 6066 --reload
 
 ### 测试
 
-项目**目前没有自动化测试**，但 `src/utils/aggregation_tools.py` 等纯函数非常适合优先补单元测试。补充测试后（建议放在 `tests/` 目录）：
+自动化测试集中在 **规则审查子系统**：`tests/` 下 13 个 `test_rule_review_*.py`，覆盖 pipeline、retriever、document_store、judge、tool_executor、tool_validation、router、audit、query_rewriter、sandbox_utils、generator 的单元测试、基础设施测试（`test_rule_review_infrastructure.py`）与端到端测试（`test_rule_review_e2e.py`）。**查询链路（`src/workflow/`、`src/agents/`、`src/utils/aggregation_tools.py` 等）尚无测试覆盖**，这些纯函数适合优先补充。
 
 ```bash
 # 运行全部测试
 pytest
 
 # 运行单个测试文件
-pytest tests/test_aggregation_tools.py
+pytest tests/test_rule_review_pipeline.py
 
 # 运行单个测试函数
-pytest tests/test_aggregation_tools.py::test_raw_filter
+pytest tests/test_rule_review_pipeline.py::test_xxx
 ```
 
 ### 手动端到端验证
@@ -198,6 +202,57 @@ LLM 直接调用（不走 LangChain Agent），使用 `SystemMessage + HumanMess
 - `routers/shared_cache.py` — 缓存实现（async Lock 保护，5 分钟过期）
 - `schemas/schemas.py` — Pydantic 请求/响应模型（`QueryRequest`、`ReturnQuery`、`SSEPayload`）
 
+## 规则审查子系统（`src/rule_review/`）
+
+与查询系统平行的第二套业务能力：回答「某交易/申报是否符合电力交易规则」类合规判断问题，输出带溯源引用与审计记录的结论。总文档为 `docs/rule-review.md`（由 design/workflow/optimization 三份合并，含详细设计 §1-§14 + 工作流程详解 + 优化方向清单），所有模块注释均按该文档第一部分 § 节引用，是理解此子系统的首选参考。开发沿 4 个 Phase 迭代：Phase 1 纯 LLM 9 阶段 pipeline → Phase 2 Tool 系统 + tool_call 验证 + bge-m3 sparse 检索 → Phase 3 Redis 缓存 + vLLM 本地模型 + 评估体系 + 审计 → Phase 4 Milvus/PostgreSQL 替换 FAISS/JSON 存储。
+
+**9 阶段流水线**（`pipeline.py`，`RuleReviewPipeline`）：
+
+```
+0. 问题改写 → 1. 澄清判断 → 2. 多文档拆分 → 3. Query 优化
+→ 4. RAG 检索 → 5. LLM 生成 → 6. Tool 调用（Phase 2 起）
+→ 7. Judge 校验 → 8. SSE 输出（含逐阶段进度标签）
+```
+
+关键分支逻辑：澄清判断（时间/实体/比较意图正则）、多文档拆分、空检索兜底路径、LLM `not_found` 路径、多文档合并去重。完整分支场景见设计文档 §2.3（12 个分支场景）。
+
+**关键模块**（均为 200–900 行量级，各司其职）：
+
+- `document_store.py`（923 行）— 文档解析（pymupdf 提取 + OCR 兜底）、切块、入库；`Chunk`/`DocumentInfo` 模型
+- `retriever.py`（925 行）— 混合检索：BM25（bm25s）+ bge-m3 向量（经 DocumentStore）+ Cross-Encoder 精排（`rerank_score`）；地名复用 `data/env_variables/data_standard.json` 归一化
+- `pipeline.py`（795 行）— 编排器，`check_clarification_needed` / `split_if_multi_document` 等纯函数可独立测试
+- `tool_executor.py`（761 行）— Tool 系统：解析并执行 LLM 生成的 tool_call，经 `sandbox_utils.py`（438 行，封装现有 `PythonSandbox`）安全执行
+- `pg_store.py`（617 行）— PostgreSQL 持久化（psycopg2 连接池），替换 JSON 文件存储
+- `evaluation.py`（606 行）— 离线评估：`TestCase`/`TestCaseManager`/`EvalRunner`，指标含 decision_accuracy、keyword_recall、source_recall、幻觉检测（LCS）
+- `audit.py`（440 行）— 审计追溯：`AuditStore` + 来源可溯记录，支持抽样质检
+- `judge.py`（437 行）— Judge 校验（设计文档 §4.6 + §7.5 + §13.8）
+- `cache.py`（422 行）— 双模式缓存：Redis 优先 → 内存降级（复用 `shared_cache.py` 的 async Lock 模式）
+- `router.py`（355 行）— API 路由（见下）
+- `milvus_store.py`（353 行）— Milvus 向量库（pymilvus），替换 FAISS 本地索引
+- `generator.py`（344 行）— LLM 推理 + 输出解析；`prompts.py`（297 行）— 规则审查专用 Prompt
+- `query_rewriter.py`（285 行）— 问题改写（时间/实体/术语标准化）
+- `local_model.py`（252 行）— vLLM 本地部署模型客户端（aiohttp，无额外依赖）
+
+**API 端点**（前缀 `/v1/rule-review`）：
+
+| 方法/路径 | 用途 |
+|---|---|
+| `POST /v1/rule-review` | 规则审查查询（SSE 流式，带逐阶段进度） |
+| `POST /v1/rule-review/documents` | 上传规则文档（multipart） |
+| `GET /v1/rule-review/documents` / `DELETE /v1/rule-review/documents/{doc_id}` | 文档管理 |
+| `GET /v1/rule-review/health` | 健康检查（docker-compose 探活依赖） |
+| `GET /v1/rule-review/audit/{query_id}` / `GET /v1/rule-review/audit/sample/{date}` / `GET /v1/rule-review/audit/stats` / `DELETE /v1/rule-review/audit/{query_id}` | 审计追溯与抽样质检 |
+
+手动验证示例：
+
+```bash
+curl -X POST http://localhost:6066/v1/rule-review \
+  -H "Content-Type: application/json" \
+  -d '{"question":"2025年3月冀北申报电价是否超过上限规则？","stream":true}'
+```
+
+**基础设施（docker-compose）**：新增 4 组服务 — Redis 7（缓存，`allkeys-lru`）、PostgreSQL 16（库名 `rule_review`）、Milvus 2.4 standalone（依赖 etcd + MinIO），数据卷 `redis_data`/`pg_data`/`etcd_data`/`minio_data`/`milvus_data` 持久化。连接配置在 `src/config.py` 统一读取（默认 localhost），**连接失败均静默降级不阻断主流程**：Redis 未配置→内存缓存、Milvus 不可用→回退 FAISS 本地索引（`data/rule_index`）、PG 不可用→回退 JSON 文件存储（`data/rule_documents`），因此本地开发/CI 无需起任何基础设施。
+
 ## 环境变量要点
 
 - `GATEWAY_MODELS`: 逗号分隔的模型名，在此列表中的模型走中转代理而非直连 DashScope
@@ -206,6 +261,7 @@ LLM 直接调用（不走 LangChain Agent），使用 `SystemMessage + HumanMess
 - `FORMAT_SUMMARY_MAX_DATA_CHARS`: 格式化阶段的字符数阈值（默认 28000），超出则跳过格式化
 - `MAX_SUBQUESTION_CONCURRENCY` / `MAX_SHARED_SUBQUESTION_CONCURRENCY`: 子问题并发数控制
 - `SERVER_HOST` / `SERVER_PORT`: 服务监听地址和端口（`config.py` 默认端口为 6060，项目 `.env` 使用 6066）
+- 规则审查子系统（均在 `src/config.py` 读取，`.env` 可不配置，默认值保证降级运行）：`REDIS_URL` / `REDIS_CACHE_TTL`(默认300) / `REDIS_RETRIEVAL_TTL`(默认600)、`VLLM_BASE_URL` / `VLLM_MODEL_NAME` / `VLLM_API_KEY`、`MILVUS_HOST`(localhost) / `MILVUS_PORT`(19530) / `MILVUS_COLLECTION`(rule_documents)、`PG_HOST` / `PG_PORT`(5432) / `PG_USER`(dataquery) / `PG_PASSWORD`(dataquery) / `PG_DATABASE`(rule_review)
 
 > **关于业务 API URL 的读取方式**：`src/config.py` 的 `Settings` 类只读 `COMMON_API_URL` 和 `EMERGENCY_DAYAHEAD_API_URL` 两个业务 URL。`.env` 中定义的其他业务 API URL（如 `REALTIME_MARKET_API_URL`、`LONGTERM_CONTRACT_API_URL` 等）是直接在对应的 workflow 文件中通过 `os.getenv()` 读取的。新增业务意图时，这两种方式均可使用。
 
@@ -256,3 +312,6 @@ LLM 直接调用（不走 LangChain Agent），使用 `SystemMessage + HumanMess
 1. 写完一个功能必须进行单元测试，测试不通过就继续修改，直到测试通过
 2. 每个功能完成后，必须提交代码到 GitHub
 3. 必须提交到 GitHub 后才能够继续下一个功能的开发
+4. 请你每次使用简体中文回答我
+5. 提交到github，注释请用中文填写
+6. 运行代码在一个叫做dataquery的conda环境中
