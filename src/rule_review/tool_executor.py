@@ -537,10 +537,14 @@ async def execute_with_tool_loop(
         - tool_logs: 工具调用日志列表
     """
     from src.rule_review.generator import parse_llm_output
-    from src.rule_review.prompts import build_messages
+    from src.rule_review.prompts import build_messages, DEFAULT_GENERATION_PROMPT
 
     tool_logs: list[dict] = []
-    messages = build_messages(query, context_chunks)
+    # 显式传 V2 Prompt（含工具调用规则）：首轮 V2 产生 tool_calls 后，
+    # 循环内每轮仍保持同一格式，避免退化为 V1 造成格式漂移
+    messages = build_messages(
+        query, context_chunks, system_prompt=DEFAULT_GENERATION_PROMPT
+    )
     round_start = time.monotonic()
 
     for round_num in range(1, max_rounds + 1):

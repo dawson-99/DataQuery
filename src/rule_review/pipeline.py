@@ -27,6 +27,7 @@ from src.rule_review.audit import AuditStore, build_source_traceability
 from src.rule_review.document_store import DocumentStore
 from src.rule_review.generator import RuleReviewGenerator, parse_llm_output
 from src.rule_review.observability import LatencyStats, get_default_stats
+from src.rule_review.prompts import DEFAULT_GENERATION_PROMPT
 from src.rule_review.query_rewriter import QueryRewriter
 from src.rule_review.retriever import HybridRetriever, RetrieveResult
 from src.rule_review.schemas import (
@@ -415,6 +416,7 @@ class RuleReviewPipeline:
         llm_output = await self.generator.generate(
             query=rewritten_query,
             context_chunks=context_chunks,
+            system_prompt=DEFAULT_GENERATION_PROMPT,
         )
 
         generation_end = time.monotonic()
@@ -450,6 +452,8 @@ class RuleReviewPipeline:
 
         # ---- 阶段 6：Tool 调用 ----
         final_output = llm_output
+        # 前置初始化：无 tool_calls 时为空列表，供阶段 7 Judge 的 tool_logs 使用
+        tool_logs: list[dict] = []
 
         if llm_output.tool_calls:
             yield self._sse_label("工具调用中...", "tool")
@@ -480,6 +484,7 @@ class RuleReviewPipeline:
                     self.judge,
                     final_output if isinstance(final_output, LLMOutput) else llm_output,
                     rewritten_query, context_chunks,
+                    tool_logs=tool_logs,
                 )
                 if judged.get("judge_skipped"):
                     yield self._sse_label(
@@ -714,6 +719,7 @@ class RuleReviewPipeline:
         llm_output = await self.generator.generate(
             query=rewritten_query,
             context_chunks=context_chunks,
+            system_prompt=DEFAULT_GENERATION_PROMPT,
         )
         generation_latency_ms = (time.monotonic() - generation_start) * 1000
 
@@ -764,7 +770,8 @@ class RuleReviewPipeline:
                 from src.rule_review.judge import verify_with_fallback
 
                 judged = await verify_with_fallback(
-                    self.judge, final_llm_output, rewritten_query, context_chunks
+                    self.judge, final_llm_output, rewritten_query, context_chunks,
+                    tool_logs=tool_logs,
                 )
                 final_result = judged
                 if judged.get("judge_skipped"):
@@ -1235,6 +1242,7 @@ class RuleReviewPipeline:
                 query=result.corrective_query,
                 context_chunks=result.merged_chunks,
                 judge_feedback=feedback,
+                system_prompt=DEFAULT_GENERATION_PROMPT,
             )
         except Exception as e:
             logger.warning("[pipeline] Corrective 重新生成异常: %s", e)

@@ -282,6 +282,144 @@ class TestRuleReviewPipelineStream:
         assert len(content_events) >= 1
 
     @pytest.mark.asyncio
+    async def test_execute_stream_passes_v2_prompt(self, mock_components):
+        """生产路径调用 generate 时必须传入含工具规则的 V2 System Prompt。"""
+        rewriter, doc_store, retriever, generator, llm_output = mock_components
+        captured = {}
+
+        async def _capturing_generate(*args, **kwargs):
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            return llm_output
+
+        generator.generate = _capturing_generate
+
+        pipeline = RuleReviewPipeline(
+            rewriter=rewriter,
+            document_store=doc_store,
+            retriever=retriever,
+            generator=generator,
+        )
+
+        request = RuleReviewRequest(
+            question="2025年3月15日冀北的日前现货出清电价800元/MWh是否符合价格上限",
+            stream=True,
+        )
+
+        events = []
+        async for sse_line in pipeline.execute_stream(request):
+            events.append(sse_line)
+
+        # 断言 generate 收到含工具调用规则的 V2 Prompt
+        prompt = captured.get("system_prompt", "")
+        assert prompt, "generate() 未收到 system_prompt 参数"
+        assert "工具调用规则" in prompt
+        assert "tool_calls" in prompt
+
+    @pytest.mark.asyncio
+    async def test_execute_stream_judge_receives_tool_logs(self, mock_components):
+        """工具调用后，Judge 阶段必须收到非空 tool_logs。"""
+        rewriter, doc_store, retriever, generator, _ = mock_components
+
+        # generator 首轮输出带 tool_calls，触发阶段 6
+        tool_call_output = LLMOutput(
+            decision="",
+            reason="",
+            evidence=[],
+            confidence=0.0,
+            tool_calls=[
+                {
+                    "tool": "extract_table_data",
+                    "args": {
+                        "table_text": "| 地区 | 上限 |\n| 冀北 | 760 |",
+                        "filter_column": "地区",
+                        "filter_value": "冀北",
+                        "select_column": "上限",
+                    },
+                }
+            ],
+        )
+
+        async def _mock_generate(*args, **kwargs):
+            return tool_call_output
+
+        generator.generate = _mock_generate
+
+        # mock 工具循环：返回最终结果 + 工具日志
+        final_result = LLMOutput(
+            decision="不符合",
+            reason="800元/MWh超过上限760元/MWh",
+            evidence=[
+                {
+                    "source": "测试规则.pdf",
+                    "section": "第2条 价格上限",
+                    "page": 2,
+                    "text": "省间日前现货出清电价上限为760元/MWh。",
+                }
+            ],
+            confidence=0.95,
+        )
+        tool_logs = [
+            {
+                "round": 1,
+                "tool": "extract_table_data",
+                "args": {"filter_value": "冀北"},
+                "result": {"success": True, "data": {"value": 760, "unit": "元/MWh"}},
+                "latency_ms": 5,
+                "timestamp": "2026-01-01T00:00:00",
+            }
+        ]
+
+        mock_verify = AsyncMock(
+            return_value={
+                "verified": True,
+                "hallucinated_evidence": [],
+                "judge_skipped": False,
+                "decision": "不符合",
+                "reason": "800元/MWh超过上限760元/MWh",
+                "evidence": [
+                    {
+                        "source": "测试规则.pdf",
+                        "section": "第2条 价格上限",
+                        "page": 2,
+                        "text": "省间日前现货出清电价上限为760元/MWh。",
+                    }
+                ],
+                "confidence": 0.95,
+            }
+        )
+
+        with (
+            patch(
+                "src.rule_review.tool_executor.execute_with_tool_loop",
+                new=AsyncMock(return_value=(final_result.model_dump(), tool_logs)),
+            ),
+            patch("src.rule_review.judge.verify_with_fallback", new=mock_verify),
+        ):
+            pipeline = RuleReviewPipeline(
+                rewriter=rewriter,
+                document_store=doc_store,
+                retriever=retriever,
+                generator=generator,
+                judge=MagicMock(),  # 非 None，触发 Judge 阶段
+            )
+
+            request = RuleReviewRequest(
+                question="2025年3月15日冀北的日前现货出清电价800元/MWh是否符合价格上限",
+                stream=True,
+            )
+
+            events = []
+            async for sse_line in pipeline.execute_stream(request):
+                events.append(sse_line)
+
+        # 断言 Judge 收到的 tool_logs 非空
+        mock_verify.assert_awaited_once()
+        _, kwargs = mock_verify.await_args
+        assert kwargs.get("tool_logs") == tool_logs
+        assert kwargs["tool_logs"][0]["tool"] == "extract_table_data"
+        assert "done" in events[-1]
+
+    @pytest.mark.asyncio
     async def test_execute_stream_clarification(self, mock_components):
         """问题不明确时应返回澄清追问并提前结束。"""
         rewriter, doc_store, retriever, generator, _ = mock_components

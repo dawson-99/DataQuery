@@ -195,6 +195,11 @@ def get_system_prompt(include_tools: bool = True) -> str:
     return SYSTEM_PROMPT.format(current_date=_current_date)
 
 
+# 生产路径默认 System Prompt：含工具调用规则的 V2 版（模块加载时求值一次）。
+# pipeline 与 tool 循环显式传入，避免默认回落 V1 导致 LLM 不知 tool_calls 格式。
+DEFAULT_GENERATION_PROMPT = get_system_prompt(include_tools=True)
+
+
 # ---------------------------------------------------------------------------
 # RAG Context Prompt
 # ---------------------------------------------------------------------------
