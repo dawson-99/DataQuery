@@ -98,9 +98,20 @@ class MockGenerator:
 
     def __init__(self, response=None):
         self._response = response or _make_llm_output()
+        self._responses = None
+        self._call_count = 0
+
+    def set_responses(self, responses: list[LLMOutput]):
+        """按调用顺序依次返回不同响应（用于 Corrective 回环两轮生成）。"""
+        self._responses = responses
+        self._call_count = 0
 
     async def generate(self, query, context_chunks=None, system_prompt=None,
-                       tool_results=None, max_retries=1):
+                       tool_results=None, judge_feedback=None, max_retries=1):
+        if self._responses is not None:
+            idx = min(self._call_count, len(self._responses) - 1)
+            self._call_count += 1
+            return self._responses[idx]
         return self._response
 
 
@@ -557,6 +568,77 @@ class TestScenarioF_JudgeFallback:
         full = "".join(events)
         # SSE 应输出 judge_skipped 标签或直接返回内容
         assert "done" in events[-1]
+
+
+class TestScenarioG_CorrectiveRag:
+    """Corrective-RAG 回环端到端：真实检索器 + 两轮生成 + 两轮 Judge。"""
+
+    @pytest.mark.asyncio
+    async def test_corrective_loop_end_to_end(self, tmp_store, tmp_rewriter):
+        pdf_bytes = _make_test_pdf_bytes()
+        tmp_store.ingest(pdf_bytes, filename="规则.pdf")
+
+        # 两轮生成：首轮普通输出，第二轮修正输出
+        generator = MockGenerator()
+        generator.set_responses([
+            _make_llm_output(decision="不符合", reason="首轮推理"),
+            _make_llm_output(decision="不符合", reason="第二轮修正推理", confidence=0.97),
+        ])
+        retriever = HybridRetriever(
+            document_store=tmp_store,
+            embedding_fn=_mock_embedding_fn,
+        )
+
+        # 两轮 Judge：首轮检出幻觉与遗漏（触发回环），第二轮校验通过
+        verify_calls = {"n": 0}
+        judge = MagicMock(spec=RuleReviewJudge)
+
+        async def _verify_corrective(llm_output, original_query, context_chunks, tool_logs=None):
+            verify_calls["n"] += 1
+            if verify_calls["n"] == 1:
+                return JudgeResult(
+                    verified=False,
+                    hallucinated_evidence=[
+                        {"index": 0, "reason": "证据文本未在规则原文中找到对应内容"}
+                    ],
+                    missing_rules=[{"rule": "价格上限条款", "source": "测试规则.pdf"}],
+                    final_decision=llm_output.decision,
+                    final_reason=llm_output.reason,
+                    final_evidence=llm_output.evidence,
+                    confidence=0.8,
+                )
+            return JudgeResult(
+                verified=True,
+                final_decision=llm_output.decision,
+                final_reason=llm_output.reason,
+                final_evidence=llm_output.evidence,
+                confidence=0.97,
+            )
+
+        judge.verify = _verify_corrective
+
+        pipeline = RuleReviewPipeline(
+            rewriter=tmp_rewriter,
+            document_store=tmp_store,
+            retriever=retriever,
+            generator=generator,
+            judge=judge,
+        )
+
+        request = RuleReviewRequest(
+            question="2025年3月15日冀北的日前现货电价800元/MWh是否符合上限",
+            stream=False,
+        )
+        result = await pipeline.execute(request)
+
+        # 两轮校验都执行了，最终结果为第二轮修正结论
+        assert verify_calls["n"] == 2
+        assert result["result"]["judge_verified"] is True
+        assert result["result"]["reason"] == "第二轮修正推理"
+        # stages 记录 re_retrieval 且二次检索有命中
+        re_stage = next(s for s in result["stages"] if s.get("stage") == "re_retrieval")
+        assert re_stage["result_count"] > 0
+        assert re_stage["triggered_by"] == "both"
 
 
 # ---------------------------------------------------------------------------

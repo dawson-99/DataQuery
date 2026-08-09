@@ -209,6 +209,31 @@ class TestBuildMessages:
         msgs = build_messages("q", sample_chunks, system_prompt=custom_sys)
         assert msgs[0]["content"] == custom_sys
 
+    def test_build_messages_with_judge_feedback(self, sample_chunks):
+        """Corrective 回环：Judge 反馈段应追加到 user 消息。"""
+        judge_feedback = {
+            "hallucinated_evidence": [
+                {"index": 0, "reason": "证据文本未在规则原文中找到对应内容"}
+            ],
+            "missing_rules": [{"rule": "第5条 限价申报规则", "source": "测试规则.pdf"}],
+        }
+        msgs = build_messages(
+            "测试问题", sample_chunks, judge_feedback=judge_feedback
+        )
+        assert len(msgs) == 2
+        content = msgs[1]["content"]
+        assert "上一轮校验反馈" in content
+        assert "疑似遗漏的规则" in content
+        assert "第5条 限价申报规则" in content
+        assert "未能与规则原文匹配" in content
+        assert "证据文本未在规则原文中找到对应内容" in content
+        assert "重新生成完整的审查结果 JSON" in content
+
+    def test_build_messages_no_feedback_no_change(self, sample_chunks):
+        """不传 judge_feedback 时行为与原来一致。"""
+        msgs = build_messages("测试问题", sample_chunks)
+        assert "上一轮校验反馈" not in msgs[1]["content"]
+
 
 # ---------------------------------------------------------------------------
 # generator.py: parse_llm_output 测试
@@ -341,6 +366,39 @@ class TestRuleReviewGenerator:
         ]
         result = await gen.generate("测试问题", sample_chunks, tool_results=tool_results)
         assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_generate_passes_judge_feedback(self, sample_chunks):
+        """generate 应将 judge_feedback 透传到模型消息中。"""
+
+        class CapturingModel(MockModelStore):
+            def __init__(self):
+                super().__init__([_make_valid_llm_json()])
+                self.captured_messages = None
+
+            async def ainvoke(self, messages, **kwargs) -> AIMessage:
+                self.captured_messages = messages
+                return await super().ainvoke(messages, **kwargs)
+
+        model = CapturingModel()
+        gen = RuleReviewGenerator(model=model)
+        judge_feedback = {
+            "hallucinated_evidence": [
+                {"index": 0, "reason": "证据文本未在规则原文中找到对应内容"}
+            ],
+            "missing_rules": [{"rule": "第5条 限价申报规则", "source": "x"}],
+        }
+        result = await gen.generate(
+            "测试问题", sample_chunks, judge_feedback=judge_feedback
+        )
+        assert result is not None
+        assert model.captured_messages is not None
+        content = " ".join(
+            m.content if hasattr(m, "content") else str(m)
+            for m in model.captured_messages
+        )
+        assert "上一轮校验反馈" in content
+        assert "第5条 限价申报规则" in content
 
     @pytest.mark.asyncio
     async def test_generate_all_retries_fail(self, sample_chunks):

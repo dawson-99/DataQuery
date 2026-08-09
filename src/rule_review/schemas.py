@@ -115,6 +115,8 @@ class RetrievalAudit(BaseModel):
     final_k: int = Field(default=0, description="最终送入 LLM 的 chunk 数")
     search_expanded: bool = Field(default=False, description="是否触发了扩大搜索兜底")
     retrieval_latency_ms: float = Field(default=0.0, description="检索耗时（毫秒）")
+    retrieval_rounds: int = Field(default=1, description="检索轮数（1=常规，2=Corrective 回环）")
+    corrective_expanded: bool = Field(default=False, description="是否执行了 Corrective 二次检索")
 
 
 class LLMGenerationAudit(BaseModel):
@@ -125,6 +127,7 @@ class LLMGenerationAudit(BaseModel):
     tok_output: int = Field(default=0, description="输出 token 数")
     latency_ms: float = Field(default=0.0, description="推理耗时（毫秒）")
     not_found: bool = Field(default=False, description="是否判定'文档中无相关规则'")
+    rounds: int = Field(default=1, description="LLM 生成轮数（1=首轮，2=Corrective 回环第二轮）")
 
 
 class JudgeAudit(BaseModel):
@@ -136,6 +139,7 @@ class JudgeAudit(BaseModel):
     skipped: bool = Field(default=False, description="是否跳过了校验")
     skipped_reason: str = Field(default="", description="跳过原因")
     latency_ms: float = Field(default=0.0, description="校验耗时（毫秒）")
+    rounds: int = Field(default=1, description="Judge 校验轮数（1=首轮，2=Corrective 回环第二轮）")
 
 
 class SourceTrace(BaseModel):
@@ -181,3 +185,9 @@ class AuditRecord(BaseModel):
 
     # 溯源信息
     source_traceability: list[SourceTrace] = Field(default_factory=list)
+
+    # Corrective-RAG 回环详情（未触发时为 None）
+    corrective: dict | None = Field(
+        default=None,
+        description="Corrective-RAG 回环详情：triggered/reason/corrective_query/second_top_k/merged_chunk_count/merged_chunk_ids/round2_verified/round2_skipped/round2_tok_input/round2_tok_output/terminated_reason",
+    )

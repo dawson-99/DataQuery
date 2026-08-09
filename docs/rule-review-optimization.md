@@ -1,16 +1,16 @@
 # 规则审查子系统优化方向清单(面试素材 + 演进规划)
 
 > 用途:面试追问「这个项目还可以如何优化?添加哪些能力、功能、工具?」的回答素材。
-> 状态:方向一、方向六、方向九已落地实施;其余方向为话术与规划。
-> 关联:设计文档 `rule-review-design.md`、工作流文档 `rule-review-workflow.md`、测试 `tests/test_rule_review_evaluation.py`、`tests/test_rule_review_observability.py`、`tests/test_rule_review_llm_judge_metrics.py`。
+> 状态:方向一、方向六、方向九、方向十已落地实施;其余方向为话术与规划。
+> 关联:设计文档 `rule-review-design.md`、工作流文档 `rule-review-workflow.md`、测试 `tests/test_rule_review_evaluation.py`、`tests/test_rule_review_observability.py`、`tests/test_rule_review_llm_judge_metrics.py`、`tests/test_rule_review_corrective.py`。
 
 ---
 
 ## 回答框架(开场 30 秒)
 
-「我盘点过这个项目的优化空间,按**面试官视角**排了个优先级:先补可复现的指标(评估闭环)、再补可观测的底座(延迟分位数/审计字段)、然后是体验层(真流式/多轮)、最后是规模化(Milvus/PG 接线)和前沿探索(GraphRAG)。其中评估闭环、可观测性和 RAGAS 风格的 LLM-as-judge 评测我已经落地了,后面是规划中的二期。」
+「我盘点过这个项目的优化空间,按**面试官视角**排了个优先级:先补可复现的指标(评估闭环)、再补可观测的底座(延迟分位数/审计字段)、然后是体验层(真流式/多轮)、最后是规模化(Milvus/PG 接线)和前沿探索(GraphRAG)。其中评估闭环、可观测性、RAGAS 风格的 LLM-as-judge 评测和 Judge 触发的自纠错回环我已经落地了,后面是规划中的二期。」
 
-- 已落地:✅ 方向一(评估体系闭环)、方向六(可观测性)、方向九(RAGAS 风格 LLM-judge 评测)
+- 已落地:✅ 方向一(评估体系闭环)、方向六(可观测性)、方向九(RAGAS 风格 LLM-judge 评测)、方向十(Corrective-RAG 自纠错回环)
 - 规划中:方向二~五、七、八
 
 ---
@@ -206,6 +206,49 @@
 | 评测模型为什么不能和生成模型同一个? | 判分模型与被评模型同源会有系统性偏差;评测走独立 `JUDGE_MODEL` 配置(强模型审弱模型),temperature=0 保证可复现 |
 | 70 次调用成本怎么办? | 离线批量、串行 5-10 分钟可接受;指标结果带 `judge_latency_ms` 归因;后续可做调用级缓存与并发 |
 | 为什么评测模型走 httpx 不走 ChatQwen? | ChatQwen → langchain_qwq → torch,自带 libomp.dylib,与 faiss 的 OpenMP 运行库冲突,同进程先加载后 faiss.search 直接 abort(踩过的坑);ProxyChatModel 纯 httpx,无此问题 |
+
+---
+
+## 方向十:Corrective-RAG 自纠错回环(Judge 触发扩大检索)✅(已实施)
+
+**定位**:面试「RAG 遇到幻觉/证据不足怎么办?」「知道 Corrective-RAG / Self-RAG 吗?」「为什么 Judge 校验后不重新检索?」的高频考点,把「Judge 只校验不纠错」升级为「Judge 驱动检索层自纠错」的闭环。
+
+**现状缺口**:单向 9 阶段流水线中,Judge 检出幻觉(`hallucinated_evidence`)或遗漏(`missing_rules`)时只能在**已有证据范围内**删证据、改结论——而 `missing_rules` 本身就是"context 里没有的东西",Judge 永远无法在现状下自我修复。评测集里「证据缺失导致结论不稳」的用例只能靠检索层参数硬调。
+
+**怎么做(已落地)**:
+1. **触发条件**:`_should_run_corrective()`——开关 `RULE_REVIEW_CORRECTIVE_ENABLED`(默认 true,可关)+ 非 `judge_skipped` + 幻觉/遗漏任一非空;
+2. **补充 query 构造**(`_build_corrective_query`):rewritten_query + `missing_rules[].rule` 文本(≤50 字符 ×3 条,互相包含跳过,总长 ≤200);无遗漏时改用幻觉证据的 **section 标题**做关键词——幻觉证据本身是错的**不重查**,仅取其条款定位信息补检;
+3. **二次检索 + 合并**:`retrieve_with_fallback(corrective_query, top_k=min(top_k×2, 50))`,与首轮按 `chunk_id` 去重合并(复用 `_merge_retrieve_results`);
+4. **带反馈重新生成**:`generate(..., judge_feedback={hallucinated_evidence, missing_rules})`——反馈段只描述问题不下定论,防 LLM 过度服从;`generator` 幂等可安全二次调用;
+5. **二次校验**:`verify_with_fallback(judge, 第二轮输出, rewritten_query, 合并chunks)`——传原改写 query 而非补充 query,保证 Judge 针对用户原问题;第二轮结果即终判,**最多 1 轮**;
+6. **终止矩阵**:次轮检索空/生成失败 → 降级输出首轮结果不掩盖;次轮 LLM 判 not_found → 如实输出;次轮带 tool_calls → 预算内不重跑 Tool 直接送 Judge;
+7. **可观测与评测适配**:审计新增 `corrective` 详情 dict 与各审计模型 `rounds` 字段(旧记录 load 向后兼容);SSE 新增 `re_retrieval/re_generation/re_judge` 标签;`evaluation.py` 幻觉检测与 RAGAS 上下文改为取**末次(合并后)检索结果**,避免把二次检索证据误判为幻觉。
+
+**预期指标**:触发回环的请求(幻觉/遗漏被二次检索修正)幻觉率下降、evidence 覆盖率上升;代价是 p50 延迟增加一次检索+生成+校验(约 1.5-3 秒);评测集新增 corrective 场景用例后可量化「修正率 = 第二轮 verified / 触发数」。
+
+**面试话术**(约 30 秒):
+
+> 我把 Judge 从「只校验不纠错」升级成了「校验驱动纠错」的闭环。触发条件很明确:Judge 检出幻觉证据或遗漏规则,且校验没有跳过。触发后我先用遗漏的规则文本构造补充 query 去二次检索——注意幻觉证据本身是错的,我不会重查它,只用它的章节标题做定位关键词——然后和首轮结果按 chunk 去重合并,再带着 Judge 的反馈让 LLM 重新生成一轮,最后再过一遍 Judge,第二轮结果就是终判,最多一轮,不会无限循环。整个回环有完整的终止矩阵:二次检索没结果就保留首轮结果,不掩盖;重新生成失败就降级;审计里记录了触发原因、补充 query、合并了多少 chunk、第二轮校验结论,SSE 上也透出"补充检索中"这类进度标签。评测侧我也做了适配:幻觉检测改用合并后的证据集,不然二次检索补回来的证据会被误判成幻觉。
+
+**详细版面试话术**(约 2 分钟,面试官问「Judge 发现问题后系统会怎么处理?」时用):
+
+> **① 为什么做这个**:原来的流水线里 Judge 是最"憋屈"的一环——它发现了 evidence 是编的、发现了有规则没被引用,但只能在自己手头的证据里删删改改,`missing_rules` 这个东西本质上是"context 里不存在的内容",Judge 永远补不回来。这就是典型的 RAG 单程流水线缺陷:检索错了,后面全错,而且没有反馈回路。Corrective-RAG 的思路就是把 Judge 的信号反向喂给检索层。
+>
+> **② 触发与执行**:触发条件是 Judge 检出幻觉或遗漏任一非空,并且校验没跳过。执行分五步:第一步构造补充 query,把遗漏的规则文本拼进原问题——最多三条、每条五十字、和原问题重复的跳过;第二步二次检索,top_k 放大两倍;第三步和首轮结果按 chunk_id 合并去重;第四步带 Judge 反馈重新生成,反馈里只描述"漏了什么、哪条证据没对上原文",不下结论,防止 LLM 过度服从;第五步再过一遍 Judge,针对用户原问题校验,第二轮结果就是终判。
+>
+> **③ 工程细节与权衡**:第一,幻觉证据不重查——它本身是错的,重查等于给它第二次机会,我只取它的章节标题做定位关键词,因为章节标题里通常带着条款号;第二,最多一轮,第二轮无论结果如何都直接输出,不会陷入循环,最坏情况延迟翻倍但可控,而且有开关可以整体关掉;第三,全链路有终止矩阵——二次检索空、生成失败、判 not_found、Judge 跳过,每个分支都有明确的输出策略,绝不因为回环失败而吞掉首轮结果;第四,可观测性跟上,审计里记录触发原因、补充 query、合并 chunk 数、第二轮校验结论,评测侧幻觉检测改用合并后的证据集。
+>
+> **④ 不足与演进**:目前的二次检索 query 是启发式拼接,没让 LLM 参与生成检索词;回环只做了一轮,极端情况可能需要多轮迭代(代价是延迟);评测集里还没有专门的 corrective 场景用例,「修正率」这个指标还没有量化基线——下一步是补用例、跑出修正率数字,再考虑用 LLM 生成补充检索词。
+
+**追问预案**:
+| 追问 | 回答要点 |
+|---|---|
+| 为什么最多只做一轮? | 每轮增加一次检索+生成+校验,延迟约 1.5-3 秒;一轮能修正绝大多数"漏检索"场景;多轮收益递减且延迟不可控,后续可按轮数上限做成配置 |
+| missing_rules 里的 source 是文档名,怎么定位 chunk? | 不反查 chunk——直接用 rule 文本关键词进检索层,靠 BM25+向量去召回对应条款;source 只作为审计信息 |
+| 幻觉证据为什么不重查? | 它是 LLM 编的,重查等于给它第二次机会;真正缺的是遗漏的规则,所以 missing_rules 优先,幻觉只取 section 标题做定位关键词 |
+| 怎么防止 LLM 第二轮过度服从反馈? | 反馈只描述问题不下结论(不写"第5条是答案");第二轮 Judge 仍独立校验,修正后的结果要再过一次校验关 |
+| 和 Self-RAG / Corrective-RAG 的关系? | 都是"检索-生成-自省-纠错"闭环思路;Self-RAG 在生成中带反思 token,Corrective-RAG 用 Judge 信号触发二次检索,本项目是后者,触发信号来自幻觉检测与遗漏检查 |
+| 评测侧怎么防止二次检索证据被误判幻觉? | evaluation.py 的幻觉检测和 RAGAS 上下文改为取末次(合并后)检索 stage(`_latest_retrieval_chunks`),而不是第一个 retrieval stage |
 
 ---
 

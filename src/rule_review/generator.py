@@ -172,6 +172,7 @@ class RuleReviewGenerator:
         context_chunks: list[dict],
         system_prompt: str | None = None,
         tool_results: list[dict] | None = None,
+        judge_feedback: dict | None = None,
         max_retries: int = 1,
     ) -> LLMOutput | None:
         """非流式生成审查结果。
@@ -181,6 +182,8 @@ class RuleReviewGenerator:
             context_chunks: 检索到的 chunks 列表。
             system_prompt: 自定义 System Prompt，None 时使用默认。
             tool_results: 工具执行结果（Phase 2）。
+            judge_feedback: 上一轮 Judge 校验反馈（Corrective-RAG 回环，
+                含 hallucinated_evidence / missing_rules），None 时不注入。
             max_retries: JSON 解析失败时的重试次数。
 
         Returns:
@@ -191,6 +194,7 @@ class RuleReviewGenerator:
             context_chunks=context_chunks,
             system_prompt=system_prompt,
             tool_results=tool_results,
+            judge_feedback=judge_feedback,
         )
 
         raw_text = ""

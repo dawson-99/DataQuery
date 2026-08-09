@@ -231,6 +231,25 @@ Chunk #1: 来源《省间应急调度交易规则(日前)》/ 第12条 电价上
 
 **兜底原则**:Judge 超时(60s)/API 异常/输出解析失败 → **跳过校验**,绝不阻断主流程,`judge_skipped` 标记写入审计。
 
+**如果 Judge 检出了幻觉或遗漏**(`hallucinated_evidence` / `missing_rules` 任一非空,且开关 `RULE_REVIEW_CORRECTIVE_ENABLED=true`),不再直接输出,而是进入 **Corrective-RAG 回环**(阶段 7.5,最多 1 轮):
+
+```text
+Judge 检出问题
+  → 1. 构造补充 query:原改写 query + missing_rules[].rule 文本
+       (无遗漏时用幻觉证据的 section 标题关键词;互相包含的跳过;总长≤200)
+  → 2. 二次检索:retrieve_with_fallback(corrective_query, top_k=min(top_k×2, 50))
+  → 3. 与首轮结果按 chunk_id 合并去重(复用 _merge_retrieve_results)
+  → 4. 带 Judge 反馈重新生成:generate(query=corrective_query, context_chunks=合并chunks,
+       judge_feedback={hallucinated_evidence, missing_rules})   # 反馈只描述问题,不下定论
+  → 5. 二次校验:verify_with_fallback(judge, 第二轮输出, rewritten_query, 合并chunks)
+  → 6. 第二轮结果即最终输出(终止矩阵见设计文档 §13.9.3,不再循环)
+```
+
+**终止要点**:二次检索为空/生成失败 → 降级输出首轮结果;第二轮 LLM 判 `not_found` → 如实输出
+`judge_skipped` 不掩盖;第二轮带 `tool_calls` → 预算内不重跑 Tool 直接送 Judge。
+**评测适配**:离线评估的幻觉检测与 RAGAS 上下文改为取**末次(合并后)检索结果**,
+避免把二次检索的证据误判为幻觉。
+
 ---
 
 ### 阶段 8:SSE 输出(`pipeline.py` 各 `yield`)
@@ -249,6 +268,13 @@ data: {"type":"messageLabel","answer":"- <span>规则推理中...</span>","stage
 data: {"type":"messageLabel","answer":"- <span>工具调用中...</span>","stage":"tool"}
 
 data: {"type":"messageLabel","answer":"- <span>结果校验中...</span>","stage":"judge"}
+
+# 触发 Corrective-RAG 回环时,阶段 7 与阶段 8 之间追加:
+data: {"type":"messageLabel","answer":"- <span>补充检索中...</span>","stage":"re_retrieval"}
+
+data: {"type":"messageLabel","answer":"- <span>重新推理中...</span>","stage":"re_generation"}
+
+data: {"type":"messageLabel","answer":"- <span>二次校验中...</span>","stage":"re_judge"}
 
 event: message
 data: {"answer": "{最终审查结果 JSON}", "type": "content"}

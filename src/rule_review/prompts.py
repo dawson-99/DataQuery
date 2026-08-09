@@ -266,6 +266,7 @@ def build_messages(
     context_chunks: list[dict],
     system_prompt: str | None = None,
     tool_results: list[dict] | None = None,
+    judge_feedback: dict | None = None,
 ) -> list[dict]:
     """构建完整 messages 列表，用于 LLM 调用。
 
@@ -275,6 +276,9 @@ def build_messages(
         system_prompt: 自定义 System Prompt，None 时使用默认。
         tool_results: 工具执行结果（Phase 2），格式为：
             [{{"tool": "xxx", "args": {{}}, "result": {{}}}}]
+        judge_feedback: 上一轮 Judge 校验反馈（Corrective-RAG 回环），格式为：
+            {{"hallucinated_evidence": [...], "missing_rules": [...]}}，
+            仅描述问题不下定论，None 时不注入。
 
     Returns:
         messages 列表，可直接传给 ChatQwen / ProxyChatModel。
@@ -290,6 +294,31 @@ def build_messages(
             tool_text += f"\n- **{tr.get('tool', 'unknown')}**: {json.dumps(tr.get('result', {}), ensure_ascii=False)}"
         user_content += tool_text
         user_content += "\n\n请基于以上工具结果和规则文档内容，重新生成完整的审查结果 JSON。"
+
+    # 上一轮 Judge 校验反馈（Corrective-RAG 回环）：
+    # 只描述"漏了什么/哪里与原文不符"，不下结论，避免 LLM 过度服从
+    missing_rules = (judge_feedback or {}).get("missing_rules") or []
+    hallucinated = (judge_feedback or {}).get("hallucinated_evidence") or []
+    if missing_rules or hallucinated:
+        feedback_lines = []
+        if missing_rules:
+            feedback_lines.append("## 上一轮校验反馈：疑似遗漏的规则")
+            for i, mr in enumerate(missing_rules[:5], start=1):
+                rule = (mr.get("rule", "") if isinstance(mr, dict) else "") or str(mr)
+                if rule:
+                    feedback_lines.append(f"{i}. {rule}")
+        if hallucinated:
+            feedback_lines.append("## 上一轮校验反馈：以下证据未能与规则原文匹配，请核实或删除")
+            for h in hallucinated[:5]:
+                reason = (h.get("reason", "") if isinstance(h, dict) else "") or str(h)
+                if reason:
+                    feedback_lines.append(f"- {reason}")
+        if len(feedback_lines) > 0:
+            feedback_text = "\n".join(feedback_lines)
+            user_content += (
+                "\n\n" + feedback_text
+                + "\n\n请基于以上校验反馈逐条核查你的结论，重新生成完整的审查结果 JSON。"
+            )
 
     return [
         {"role": "system", "content": sys_prompt},

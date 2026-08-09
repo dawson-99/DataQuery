@@ -57,6 +57,33 @@ class SSEProgress:
     stage: str = ""
 
 
+@dataclass
+class CorrectiveLoopResult:
+    """Corrective-RAG 回环执行结果。
+
+    Judge 检出幻觉/遗漏后触发的"扩大检索 → 合并证据 → 重新生成 → 二次校验"
+    单轮回环的状态载体，流式/非流式共用。
+    """
+
+    triggered: bool = False
+    trigger_reason: str = ""  # missing_rules | hallucinated | both
+    final_result: dict = field(default_factory=dict)  # 最终输出（可能降级为首轮结果）
+    merged_chunks: list[dict] = field(default_factory=list)  # 合并后的 prompt chunks
+    merged_retrieve_result: "RetrieveResult | None" = None
+    second_llm_output: "LLMOutput | None" = None
+    second_judged: dict | None = None
+    corrective_query: str = ""
+    second_top_k: int = 0
+    retrieval_rounds: int = 1
+    generation_rounds: int = 1
+    judge_rounds: int = 1
+    terminated_reason: str = ""  # "" | second_retrieve_empty/error | second_generate_none | second_not_found | second_judge_skipped
+    retrieval_ms: float = 0.0
+    generation_ms: float = 0.0
+    judge_ms: float = 0.0
+    progress_labels: list = field(default_factory=list)  # [(label_text, stage)]
+
+
 # ---------------------------------------------------------------------------
 # 澄清判断
 # ---------------------------------------------------------------------------
@@ -107,6 +134,51 @@ def _has_entity_info(query: str) -> bool:
         return True
 
     return False
+
+
+def _is_query_subsumed(
+    candidate: str, query: str, parts: list[str]
+) -> bool:
+    """判断补充关键词是否被已有 query/补充项包含（互相包含则跳过）。
+
+    Corrective-RAG 回环构造二次检索 query 时用于去重：
+    与 rewritten_query 或已选补充片段重叠的内容不重复加入。
+    """
+    if not candidate:
+        return True
+    if candidate in query or query in candidate:
+        return True
+    for p in parts:
+        if candidate in p or p in candidate:
+            return True
+    return False
+
+
+def _build_corrective_audit(
+    loop_result: CorrectiveLoopResult | None,
+) -> dict | None:
+    """构造 Corrective-RAG 回环的审计详情 dict（未触发时返回 None）。
+
+    供 execute_stream / execute 的 AuditRecord 使用，字段全带默认值，
+    旧审计记录 load 时保持向后兼容。
+    """
+    if loop_result is None or not loop_result.triggered:
+        return None
+    second_judged = loop_result.second_judged or {}
+    second_llm = loop_result.second_llm_output
+    return {
+        "triggered": True,
+        "reason": loop_result.trigger_reason,
+        "corrective_query": loop_result.corrective_query,
+        "second_top_k": loop_result.second_top_k,
+        "merged_chunk_count": len(loop_result.merged_chunks),
+        "merged_chunk_ids": [c.get("chunk_id", "") for c in loop_result.merged_chunks],
+        "round2_verified": bool(second_judged.get("judge_verified", False)),
+        "round2_skipped": bool(second_judged.get("judge_skipped", False)),
+        "round2_tok_input": second_llm.tok_input if second_llm is not None else 0,
+        "round2_tok_output": second_llm.tok_output if second_llm is not None else 0,
+        "terminated_reason": loop_result.terminated_reason,
+    }
 
 
 def _has_comparison_intent(query: str) -> bool:
@@ -396,6 +468,7 @@ class RuleReviewPipeline:
 
         # ---- 阶段 7：Judge 校验 ----
         judge_audit = JudgeAudit(skipped=True, skipped_reason="no_judge_configured")
+        corrective_loop_result: CorrectiveLoopResult | None = None
         if self.judge is not None:
             yield self._sse_label("结果校验中...", "judge")
             judge_start = time.monotonic()
@@ -426,6 +499,34 @@ class RuleReviewPipeline:
                         latency_ms=(time.monotonic() - judge_start) * 1000,
                     )
                 final_output = judged
+
+                # ---- Corrective-RAG 回环：Judge 检出幻觉/遗漏 → 扩大检索 ----
+                # 最多 1 轮：二次检索 → 合并证据 → 带反馈重新生成 → 二次校验
+                if self._should_run_corrective(final_output):
+                    loop_labels: list[tuple[str, str]] = []
+                    corrective_loop_result = await self._run_corrective_loop(
+                        rewritten_query=rewritten_query,
+                        first_retrieve_result=retrieve_result,
+                        first_llm_output=(
+                            final_output if isinstance(final_output, LLMOutput) else llm_output
+                        ),
+                        first_judged=final_output,
+                        top_k=request.top_k,
+                        progress=lambda t, s: loop_labels.append((t, s)),
+                    )
+                    # SSE 标签在回环结束后统一 flush（生成本就是非流式调用）
+                    for label_text, label_stage in loop_labels:
+                        yield self._sse_label(label_text, label_stage)
+                    final_output = corrective_loop_result.final_result
+                    # 审计与统计更新为第二轮结论
+                    judge_audit = JudgeAudit(
+                        verified=final_output.get("judge_verified", False),
+                        hallucinated_count=len(final_output.get("judge_hallucinated", [])),
+                        skipped=final_output.get("judge_skipped", False),
+                        skipped_reason=final_output.get("judge_skipped_reason", ""),
+                        rounds=2,
+                        latency_ms=(time.monotonic() - judge_start) * 1000,
+                    )
             except Exception as e:
                 logger.warning("[pipeline] Judge 阶段异常: %s", e)
                 yield self._sse_label("校验服务繁忙，已跳过校验...", "judge_skipped")
@@ -454,8 +555,10 @@ class RuleReviewPipeline:
 
         # ---- 延迟统计（可观测性）----
         self._record_latencies(
-            retrieval_ms=retrieval_latency_ms,
-            generation_ms=generation_latency_ms,
+            retrieval_ms=retrieval_latency_ms
+            + (corrective_loop_result.retrieval_ms if corrective_loop_result else 0.0),
+            generation_ms=generation_latency_ms
+            + (corrective_loop_result.generation_ms if corrective_loop_result else 0.0),
             judge_ms=judge_audit.latency_ms if judge_audit else 0.0,
             total_ms=elapsed * 1000,
         )
@@ -463,9 +566,14 @@ class RuleReviewPipeline:
         # ---- 构建并保存审计记录 ----
         if self.audit_store is not None:
             try:
-                # 构建溯源链
+                # 构建溯源链（Corrective 回环后使用合并后的 chunks）
                 final_dict = final_output if isinstance(final_output, dict) else final_output.model_dump()
-                source_traces = build_source_traceability(final_dict, context_chunks)
+                source_chunks = (
+                    corrective_loop_result.merged_chunks
+                    if corrective_loop_result and corrective_loop_result.merged_chunks
+                    else context_chunks
+                )
+                source_traces = build_source_traceability(final_dict, source_chunks)
 
                 audit_record = AuditRecord(
                     query_id=query_id,
@@ -479,6 +587,14 @@ class RuleReviewPipeline:
                         final_k=len(retrieve_result.results),
                         search_expanded=retrieve_result.search_expanded,
                         retrieval_latency_ms=round(retrieval_latency_ms, 2),
+                        retrieval_rounds=(
+                            corrective_loop_result.retrieval_rounds
+                            if corrective_loop_result else 1
+                        ),
+                        corrective_expanded=(
+                            corrective_loop_result.triggered
+                            if corrective_loop_result else False
+                        ),
                     ),
                     llm_generation=LLMGenerationAudit(
                         model=settings.RULE_REVIEW_MODEL,
@@ -486,10 +602,15 @@ class RuleReviewPipeline:
                         tok_output=llm_output.tok_output,
                         not_found=llm_output.not_found,
                         latency_ms=round(generation_latency_ms, 2),
+                        rounds=(
+                            corrective_loop_result.generation_rounds
+                            if corrective_loop_result else 1
+                        ),
                     ),
                     judge_verification=judge_audit,
                     final_result=final_dict,
                     source_traceability=source_traces,
+                    corrective=_build_corrective_audit(corrective_loop_result),
                 )
                 self.audit_store.save(audit_record)
             except Exception as e:
@@ -635,6 +756,7 @@ class RuleReviewPipeline:
 
         # ---- 阶段 7：Judge 校验 ----
         judge_audit = JudgeAudit(skipped=True, skipped_reason="no_judge_configured")
+        corrective_loop_result: CorrectiveLoopResult | None = None
         final_result = final_llm_output.model_dump()
         if self.judge is not None:
             judge_start = time.monotonic()
@@ -658,6 +780,30 @@ class RuleReviewPipeline:
                         skipped=False,
                         latency_ms=(time.monotonic() - judge_start) * 1000,
                     )
+
+                # ---- Corrective-RAG 回环：Judge 检出幻觉/遗漏 → 扩大检索 ----
+                if self._should_run_corrective(final_result):
+                    corrective_loop_result = await self._run_corrective_loop(
+                        rewritten_query=rewritten_query,
+                        first_retrieve_result=retrieve_result,
+                        first_llm_output=(
+                            final_llm_output
+                            if isinstance(final_llm_output, LLMOutput)
+                            else llm_output
+                        ),
+                        first_judged=final_result,
+                        top_k=request.top_k,
+                    )
+                    final_result = corrective_loop_result.final_result
+                    # 审计与统计更新为第二轮结论
+                    judge_audit = JudgeAudit(
+                        verified=final_result.get("judge_verified", False),
+                        hallucinated_count=len(final_result.get("judge_hallucinated", [])),
+                        skipped=final_result.get("judge_skipped", False),
+                        skipped_reason=final_result.get("judge_skipped_reason", ""),
+                        rounds=2,
+                        latency_ms=(time.monotonic() - judge_start) * 1000,
+                    )
             except Exception as e:
                 logger.warning("[pipeline] Judge 阶段异常: %s", e)
                 judge_audit = JudgeAudit(skipped=True, skipped_reason=str(e))
@@ -667,10 +813,58 @@ class RuleReviewPipeline:
                 "verified": judged.get("judge_verified", False),
             })
 
+            # Corrective 回环阶段日志（格式与首轮 retrieval 一致，供离线评估取合并后证据）
+            if corrective_loop_result is not None:
+                merged_rr = corrective_loop_result.merged_retrieve_result
+                stages_log.append({
+                    "stage": "re_retrieval",
+                    "triggered_by": corrective_loop_result.trigger_reason,
+                    "corrective_query": corrective_loop_result.corrective_query,
+                    "second_top_k": corrective_loop_result.second_top_k,
+                    "result_count": len(merged_rr.results) if merged_rr else 0,
+                    "terminated_reason": corrective_loop_result.terminated_reason,
+                    "retrieved_chunks": [
+                        {
+                            "chunk_id": getattr(getattr(r, "chunk", r), "chunk_id", ""),
+                            "source": getattr(getattr(r, "chunk", r), "source", "未知文档"),
+                            "text": getattr(getattr(r, "chunk", r), "text", "")[:200],
+                        }
+                        for r in (merged_rr.results if merged_rr else [])
+                    ],
+                    "retrieved_chunks_full": [
+                        {
+                            "chunk_id": getattr(c, "chunk_id", ""),
+                            "source": getattr(c, "source", "未知文档"),
+                            "section": getattr(c, "section", ""),
+                            "page": getattr(c, "page", 0),
+                            "text": getattr(c, "text", ""),
+                        }
+                        for r in (merged_rr.results if merged_rr else [])
+                        for c in [getattr(r, "chunk", r)]
+                    ],
+                })
+                if corrective_loop_result.second_llm_output is not None:
+                    stages_log.append({
+                        "stage": "generation",
+                        "round": 2,
+                        "not_found": corrective_loop_result.second_llm_output.not_found,
+                        "decision": corrective_loop_result.second_llm_output.decision,
+                        "confidence": corrective_loop_result.second_llm_output.confidence,
+                    })
+                if corrective_loop_result.second_judged is not None:
+                    stages_log.append({
+                        "stage": "judge",
+                        "round": 2,
+                        "skipped": corrective_loop_result.second_judged.get("judge_skipped", False),
+                        "verified": corrective_loop_result.second_judged.get("judge_verified", False),
+                    })
+
         # ---- 延迟统计（可观测性）----
         self._record_latencies(
-            retrieval_ms=retrieval_latency_ms,
-            generation_ms=generation_latency_ms,
+            retrieval_ms=retrieval_latency_ms
+            + (corrective_loop_result.retrieval_ms if corrective_loop_result else 0.0),
+            generation_ms=generation_latency_ms
+            + (corrective_loop_result.generation_ms if corrective_loop_result else 0.0),
             judge_ms=judge_audit.latency_ms if judge_audit else 0.0,
             total_ms=(time.monotonic() - stage_start) * 1000,
         )
@@ -678,8 +872,13 @@ class RuleReviewPipeline:
         # ---- 构建并保存审计记录 ----
         if self.audit_store is not None:
             try:
-                context_chunks = self._chunks_to_dict_list(retrieve_result.results)
-                source_traces = build_source_traceability(final_result, context_chunks)
+                # Corrective 回环后使用合并后的 chunks 构建溯源链
+                source_chunks = (
+                    corrective_loop_result.merged_chunks
+                    if corrective_loop_result and corrective_loop_result.merged_chunks
+                    else self._chunks_to_dict_list(retrieve_result.results)
+                )
+                source_traces = build_source_traceability(final_result, source_chunks)
 
                 audit_record = AuditRecord(
                     query_id=query_id,
@@ -693,6 +892,14 @@ class RuleReviewPipeline:
                         final_k=len(retrieve_result.results),
                         search_expanded=retrieve_result.search_expanded,
                         retrieval_latency_ms=round(retrieval_latency_ms, 2),
+                        retrieval_rounds=(
+                            corrective_loop_result.retrieval_rounds
+                            if corrective_loop_result else 1
+                        ),
+                        corrective_expanded=(
+                            corrective_loop_result.triggered
+                            if corrective_loop_result else False
+                        ),
                     ),
                     llm_generation=LLMGenerationAudit(
                         model=settings.RULE_REVIEW_MODEL,
@@ -700,6 +907,10 @@ class RuleReviewPipeline:
                         tok_output=llm_output.tok_output,
                         not_found=llm_output.not_found,
                         latency_ms=round(generation_latency_ms, 2),
+                        rounds=(
+                            corrective_loop_result.generation_rounds
+                            if corrective_loop_result else 1
+                        ),
                     ),
                     tool_executions=[
                         ToolCallLog(
@@ -713,8 +924,10 @@ class RuleReviewPipeline:
                         )
                         for t in tool_logs
                     ],
+                    judge_verification=judge_audit,
                     final_result=final_result,
                     source_traceability=source_traces,
+                    corrective=_build_corrective_audit(corrective_loop_result),
                 )
                 self.audit_store.save(audit_record)
             except Exception as e:
@@ -744,8 +957,12 @@ class RuleReviewPipeline:
         query: str,
         top_k: int = 10,
     ) -> RetrieveResult:
-        """执行阶段 3-4：检索（含空检索兜底）。"""
-        return await self.retriever.retrieve_with_fallback(query, top_k=top_k)
+        """执行阶段 3-4：检索（含空检索兜底）。
+
+        注意：retrieve_with_fallback 是同步方法，此处直接返回其结果，
+        由调用方决定是否 to_thread 包装（async 包装同步调用，await 可取值）。
+        """
+        return self.retriever.retrieve_with_fallback(query, top_k=top_k)
 
     async def run_generate(
         self,
@@ -849,6 +1066,234 @@ class RuleReviewPipeline:
             vector_hits=total_vector,
             fused_hits=len(merged),
         )
+
+    # ------------------------------------------------------------------
+    # Corrective-RAG 回环（设计文档 §13.x）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _should_run_corrective(judged: dict) -> bool:
+        """判断是否触发 Corrective-RAG 回环。
+
+        Args:
+            judged: verify_with_fallback 返回的结果 dict。
+
+        Returns:
+            True 表示需要触发二次检索：开关开启 + Judge 未跳过
+            + 检出幻觉证据或遗漏规则（任一）。
+        """
+        if not settings.RULE_REVIEW_CORRECTIVE_ENABLED:
+            return False
+        if judged.get("judge_skipped"):
+            return False
+        return bool(judged.get("judge_hallucinated")) or bool(
+            judged.get("judge_missing_rules")
+        )
+
+    @staticmethod
+    def _build_corrective_query(
+        rewritten_query: str,
+        judged: dict,
+        first_llm_output: LLMOutput | None,
+    ) -> str:
+        """构造二次检索 query。
+
+        规则：
+        1. 核心补充 = missing_rules 的 rule 文本（"漏了"的东西才是补检重点），
+           去空白、截断 ≤50 字符、最多 3 条；
+        2. 幻觉关键词仅当无 missing_rules 时使用（幻觉证据本身是错的，不重查；
+           但幻觉意味着上下文缺支撑，用证据的 section 标题做关键词），
+           index 越界时回退 reason 前 30 字符，最多 3 条；
+        3. 与 rewritten_query 或已选补充互相包含的跳过；总长 ≤200；
+        4. 无有效补充时原样返回 rewritten_query（仅靠扩大 top_k）。
+        """
+        parts: list[str] = []
+        missing_rules = judged.get("judge_missing_rules") or []
+        hallucinated = judged.get("judge_hallucinated") or []
+
+        for mr in missing_rules[:3]:
+            rule = (mr.get("rule", "") if isinstance(mr, dict) else "") or ""
+            rule = re.sub(r"\s+", " ", rule).strip()[:50]
+            if rule and not _is_query_subsumed(rule, rewritten_query, parts):
+                parts.append(rule)
+
+        if not parts:
+            for h in hallucinated[:3]:
+                kw = ""
+                if isinstance(h, dict):
+                    idx = h.get("index")
+                    if (
+                        isinstance(idx, int)
+                        and first_llm_output is not None
+                        and 0 <= idx < len(first_llm_output.evidence)
+                    ):
+                        kw = first_llm_output.evidence[idx].section
+                    if not kw:
+                        kw = str(h.get("reason", ""))[:30]
+                kw = re.sub(r"\s+", " ", str(kw)).strip()
+                if kw and not _is_query_subsumed(kw, rewritten_query, parts):
+                    parts.append(kw)
+
+        if not parts:
+            return rewritten_query
+        merged = f"{rewritten_query} {' '.join(parts)}"
+        return merged[:200]
+
+    async def _run_corrective_loop(
+        self,
+        *,
+        rewritten_query: str,
+        first_retrieve_result: RetrieveResult,
+        first_llm_output: LLMOutput | None,
+        first_judged: dict,
+        top_k: int,
+        progress: "Any | None" = None,
+    ) -> CorrectiveLoopResult:
+        """执行一轮 Corrective-RAG 回环（最大 1 轮，不循环）。
+
+        时序：构造补充 query → 二次检索（top_k×2）→ 与首轮合并去重
+        → 带 Judge 反馈重新生成 → 二次校验（针对 rewritten_query）。
+
+        Args:
+            rewritten_query: 改写后的用户问题（二次校验的校验基准）。
+            first_retrieve_result: 首轮检索结果（合并去重的底）。
+            first_llm_output: 首轮（Tool 后）LLM 输出，用于幻觉关键词反查。
+            first_judged: 首轮 Judge 结果 dict（含 judge_hallucinated/missing_rules）。
+            top_k: 请求的 top_k，二次检索与合并取 min(top_k*2, 50)。
+            progress: 可选回调 (label_text, stage)，用于收集 SSE 进度标签。
+
+        Returns:
+            CorrectiveLoopResult；final_result 为最终输出，
+            第二轮结果一律为终判（可能降级回首轮）。
+        """
+        result = CorrectiveLoopResult(triggered=True)
+        has_missing = bool(first_judged.get("judge_missing_rules"))
+        has_hallucinated = bool(first_judged.get("judge_hallucinated"))
+        result.trigger_reason = (
+            "both"
+            if (has_missing and has_hallucinated)
+            else ("missing_rules" if has_missing else "hallucinated")
+        )
+        if progress:
+            result.progress_labels.append(("补充检索中...", "re_retrieval"))
+            progress("补充检索中...", "re_retrieval")
+
+        # 1. 构造补充 query + 扩大 top_k（请求上限 50）
+        result.corrective_query = self._build_corrective_query(
+            rewritten_query, first_judged, first_llm_output
+        )
+        second_top_k = min(top_k * 2, 50)
+        result.second_top_k = second_top_k
+
+        # 2. 二次检索（复用 run_retrieve，内部 async 包装同步检索）
+        retrieve_start = time.monotonic()
+        try:
+            second_retrieve = await self.run_retrieve(
+                result.corrective_query, top_k=second_top_k
+            )
+            result.retrieval_rounds = 2
+        except Exception as e:
+            logger.warning("[pipeline] Corrective 二次检索异常: %s", e)
+            result.retrieval_ms = (time.monotonic() - retrieve_start) * 1000
+            result.final_result = first_judged
+            result.merged_chunks = self._chunks_to_dict_list(
+                first_retrieve_result.results
+            )
+            result.terminated_reason = "second_retrieve_error"
+            return result
+        result.retrieval_ms = (time.monotonic() - retrieve_start) * 1000
+
+        # 3. 次轮无结果 → 保留首轮结果，不掩盖
+        if second_retrieve.not_found and not second_retrieve.results:
+            logger.info("[pipeline] Corrective 二次检索无结果，保留首轮结果")
+            result.merged_retrieve_result = second_retrieve
+            result.final_result = first_judged
+            result.merged_chunks = self._chunks_to_dict_list(
+                first_retrieve_result.results
+            )
+            result.terminated_reason = "second_retrieve_empty"
+            return result
+
+        # 4. 与首轮结果合并去重（复用 _merge_retrieve_results）
+        merged = self._merge_retrieve_results(
+            [first_retrieve_result, second_retrieve], top_k=second_top_k
+        )
+        result.merged_retrieve_result = merged
+        result.merged_chunks = self._chunks_to_dict_list(merged.results)
+
+        # 5. 带 Judge 反馈重新生成（generator 幂等，可安全二次调用）
+        if progress:
+            result.progress_labels.append(("重新推理中...", "re_generation"))
+            progress("重新推理中...", "re_generation")
+        feedback = {
+            "hallucinated_evidence": first_judged.get("judge_hallucinated", []),
+            "missing_rules": first_judged.get("judge_missing_rules", []),
+        }
+        gen_start = time.monotonic()
+        try:
+            second_llm = await self.generator.generate(
+                query=result.corrective_query,
+                context_chunks=result.merged_chunks,
+                judge_feedback=feedback,
+            )
+        except Exception as e:
+            logger.warning("[pipeline] Corrective 重新生成异常: %s", e)
+            second_llm = None
+        result.generation_ms = (time.monotonic() - gen_start) * 1000
+        result.generation_rounds = 2
+
+        # 6. 终止矩阵：第二轮结果一律为最终输出，不再循环
+        if second_llm is None:
+            logger.warning("[pipeline] Corrective 重新生成失败，降级输出首轮结果")
+            result.final_result = first_judged
+            result.terminated_reason = "second_generate_none"
+            return result
+
+        if second_llm.not_found:
+            logger.info("[pipeline] Corrective 第二轮 LLM 判定无相关规则")
+            final = second_llm.model_dump()
+            final["judge_skipped"] = True
+            final["judge_skipped_reason"] = "not_found"
+            result.second_llm_output = second_llm
+            result.final_result = final
+            result.terminated_reason = "second_not_found"
+            return result
+
+        # 1 轮预算内不重跑 Tool：清空 tool_calls，直接送 Judge
+        if second_llm.tool_calls:
+            logger.info(
+                "[pipeline] Corrective 第二轮带 tool_calls，预算内不重跑 Tool，直接送 Judge"
+            )
+            second_llm.tool_calls = []
+
+        # 7. 二次校验（传 rewritten_query，Judge 必须针对用户原问题）
+        if progress:
+            result.progress_labels.append(("二次校验中...", "re_judge"))
+            progress("二次校验中...", "re_judge")
+        judge_start = time.monotonic()
+        try:
+            if self.judge is not None:
+                from src.rule_review.judge import verify_with_fallback
+
+                second_judged = await verify_with_fallback(
+                    self.judge, second_llm, rewritten_query, result.merged_chunks
+                )
+            else:
+                second_judged = second_llm.model_dump()
+                second_judged["judge_skipped"] = True
+                second_judged["judge_skipped_reason"] = "no_judge_configured"
+        except Exception as e:
+            logger.warning("[pipeline] Corrective 二次校验异常: %s", e)
+            second_judged = second_llm.model_dump()
+            second_judged["judge_skipped"] = True
+            second_judged["judge_skipped_reason"] = str(e)[:200]
+        result.judge_ms = (time.monotonic() - judge_start) * 1000
+        result.judge_rounds = 2
+        result.second_judged = second_judged
+        result.final_result = second_judged
+        if second_judged.get("judge_skipped"):
+            result.terminated_reason = "second_judge_skipped"
+        return result
 
     # ------------------------------------------------------------------
     # SSE 格式化

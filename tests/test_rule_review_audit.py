@@ -383,6 +383,58 @@ class TestAuditStoreSaveAndLoad:
         assert path.endswith(f"{sample_audit_record.query_id}.json")
         assert os.path.exists(path)
 
+    def test_load_legacy_record_without_corrective_fields(self, audit_store):
+        """旧版审计 JSON（无 Corrective 新字段）load 时回填默认值，向后兼容。"""
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        legacy = {
+            "query_id": "q-legacy",
+            "timestamp": now,
+            "original_query": "旧版问题",
+            "rewritten_query": "旧版改写",
+            "retrieval": {
+                "bm25_k": 30,
+                "vector_k": 30,
+                "sparse_k": 0,
+                "fusion_method": "RRF",
+                "final_k": 10,
+                "search_expanded": False,
+                "retrieval_latency_ms": 12.3,
+                # 旧版无 retrieval_rounds / corrective_expanded
+            },
+            "llm_generation": {
+                "model": "qwen3-max",
+                "tok_input": 100,
+                "tok_output": 50,
+                "latency_ms": 800.0,
+                "not_found": False,
+                # 旧版无 rounds
+            },
+            "judge_verification": {
+                "model": "deepseek-v4",
+                "verified": True,
+                "hallucinated_count": 0,
+                "skipped": False,
+                "skipped_reason": "",
+                "latency_ms": 300.0,
+                # 旧版无 rounds
+            },
+            "final_result": {"decision": "符合"},
+            "source_traceability": [],
+            # 旧版无 corrective
+        }
+        date_str = now[:10]
+        path = Path(audit_store.storage_dir) / date_str / "q-legacy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+
+        loaded = audit_store.load("q-legacy", date=date_str)
+        assert loaded is not None
+        assert loaded.retrieval.retrieval_rounds == 1
+        assert loaded.retrieval.corrective_expanded is False
+        assert loaded.llm_generation.rounds == 1
+        assert loaded.judge_verification.rounds == 1
+        assert loaded.corrective is None
+
 
 class TestAuditStoreList:
     def test_list_by_date(self, audit_store, sample_audit_record):

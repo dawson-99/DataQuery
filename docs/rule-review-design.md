@@ -2142,6 +2142,67 @@ event: message
 data: {"answer":"{\"decision\":\"不符合\",\"reason\":\"...\",\"judge_skipped\":true}"}
 ```
 
+### 13.9 阶段 7.5：Corrective-RAG 回环（Judge 触发扩大检索）
+
+> 本节为设计文档 v2 的新增闭环，位于阶段 7（Judge 校验）与阶段 8（SSE 输出）之间。
+> 背景：单向流水线中 Judge 检出幻觉/遗漏时只能在**已有证据范围内**删证据、改结论；
+> 而 `missing_rules` 本身就是"context 里没有的东西"，Judge 无法在现状下自我修复。
+> 回环让 Judge 的校验信号反向驱动检索层，形成 RAG 自纠错闭环（Corrective-RAG 思路）。
+
+#### 13.9.1 触发条件
+
+| 信号 | 判定 | 说明 |
+|---|---|---|
+| `judge_hallucinated` 非空 | `_should_run_corrective()` | 证据未能与原文匹配 → 上下文缺支撑 |
+| `judge_missing_rules` 非空 | 同上 | 存在未检索到的关键规则 → 补检重点 |
+| 任一为真即触发 | — | `judge_skipped` 时**不触发**；配置开关关闭时不触发 |
+
+配置项 `RULE_REVIEW_CORRECTIVE_ENABLED`（默认 `true`，`src/config.py` 读取），
+评测或延迟敏感场景可置 `false` 关闭。
+
+#### 13.9.2 回环时序（最多 1 轮）
+
+```
+阶段7 Judge（第1轮）→ 检出幻觉/遗漏
+  → 1. 构造补充 query：rewritten_query + missing_rules[].rule 文本（≤50字符×3条）
+       （无 missing_rules 时改用幻觉证据的 section 标题关键词；与 query 互相包含的跳过；总长≤200）
+  → 2. 二次检索：retrieve_with_fallback(corrective_query, top_k=min(top_k×2, 50))
+  → 3. 与首轮结果按 chunk_id 合并去重（复用 _merge_retrieve_results），取前 min(top_k×2, 50)
+  → 4. 带 Judge 反馈重新生成：generate(query=corrective_query, context_chunks=合并chunks,
+       judge_feedback={hallucinated_evidence, missing_rules})
+       —— 反馈仅描述问题不下定论，防 LLM 过度服从
+  → 5. 二次校验：verify_with_fallback(judge, 第二轮LLM输出, rewritten_query, 合并chunks)
+       —— 注意传 rewritten_query（Judge 必须针对用户原问题）
+  → 6. 第二轮结果即最终输出，不再循环
+```
+
+#### 13.9.3 终止矩阵（第二轮结果一律为终判）
+
+| 第二轮 LLM 结果 | 处理 | terminated_reason |
+|---|---|---|
+| 二次检索无结果 | 保留首轮 Judge 结果，不掩盖 | `second_retrieve_empty` |
+| 二次检索异常 | 同上（warning 日志） | `second_retrieve_error` |
+| 生成返回 None（服务故障） | 降级输出首轮结果 | `second_generate_none` |
+| `not_found=True` | 输出第二轮 LLM 输出 + `judge_skipped=True, reason="not_found"` | `second_not_found` |
+| 带 `tool_calls` | 1 轮预算内不重跑 Tool：清空 tool_calls 直接送 Judge | — |
+| 二次校验正常 | 输出 `verify_with_fallback` 结果（含第二轮信号） | `""` |
+| 二次校验跳过 | 输出其跳过结果 | `second_judge_skipped` |
+
+#### 13.9.4 关键实现约定
+
+- **合并证据**：首轮（多文档时为合并结果）+ 二次检索结果，按 `chunk_id` 去重、
+  按 `score` 降序、截断 `min(top_k×2, 50)`；去重保留首次出现的副本。
+- **幻觉证据不重查**：`hallucinated_evidence` 本身是错的，仅当其 section 标题
+  （通常含条款号关键词）被用作补充关键词，证据正文不进入二次 query。
+- **多文档场景**：二次检索走全局检索（不传 doc_filter），简化为全局补检。
+- **审计**：`AuditRecord.corrective` 记录触发原因/补充 query/合并 chunk 数/第二轮
+  校验结论/终止原因；`RetrievalAudit.retrieval_rounds`、`LLMGenerationAudit.rounds`、
+  `JudgeAudit.rounds` 记录轮次（旧记录 load 时回填默认值，向后兼容）。
+- **SSE**：新增 `re_retrieval` / `re_generation` / `re_judge` 进度标签，
+  在回环结束后统一 flush（生成本就是非流式内部调用）。
+- **评测适配**：`evaluation.py` 的幻觉检测与 RAGAS 上下文改为取**末次**
+  （合并后）检索结果（`_latest_retrieval_chunks`），避免把二次检索证据误判为幻觉。
+
 ---
 
 ## 14. 异常处理策略

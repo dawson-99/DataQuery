@@ -425,6 +425,30 @@ def _lcs_length(s1: str, s2: str) -> int:
     return max_len
 
 
+def _latest_retrieval_chunks(
+    stages: list[dict], full: bool = False
+) -> list[dict]:
+    """取末次检索（含 Corrective-RAG 回环的 re_retrieval）的 chunk 明细。
+
+    Corrective 回环触发后，最终证据来自二次检索与首轮合并的结果，
+    只取第一个 retrieval stage 会把有效证据误判为幻觉；
+    从 stages 末尾向前找最后一个 retrieval 类 stage 作为评估基准。
+
+    Args:
+        stages: execute() 返回的 stages_log。
+        full: True 取完整文本（RAGAS 用），False 取截断版（幻觉检测用）。
+
+    Returns:
+        对应 stage 的 chunks 列表，未找到时返回空列表。
+    """
+    key = "retrieved_chunks_full" if full else "retrieved_chunks"
+    for s in reversed(stages):
+        if s.get("stage") in ("retrieval", "re_retrieval"):
+            chunks = s.get(key) or []
+            return list(chunks)
+    return []
+
+
 # ---------------------------------------------------------------------------
 # 批量评估运行器
 # ---------------------------------------------------------------------------
@@ -505,12 +529,9 @@ class EvalRunner:
                 evidence_sources = [e.get("source", "") for e in evidence]
                 reason = actual.get("reason", "")
 
-                # 检索到的文本（用于幻觉检测与 recall@k/MRR 计算）
-                retrieved_chunks = []
-                for s in stages:
-                    if s.get("stage") == "retrieval":
-                        retrieved_chunks = s.get("retrieved_chunks", []) or []
-                        break
+                # 检索到的文本（用于幻觉检测与 recall@k/MRR 计算）。
+                # Corrective 回环后取末次（合并后）检索结果，否则会误判幻觉
+                retrieved_chunks = _latest_retrieval_chunks(stages, full=False)
                 retrieved_texts = [c.get("text", "") for c in retrieved_chunks]
 
                 kw_recall, kw_found, kw_missed = compute_keyword_recall(
@@ -538,15 +559,11 @@ class EvalRunner:
                 # RAGAS 风格 LLM-as-judge 指标（完整文本优先，缺失时回退截断版）
                 ragas = RagasMetrics(skipped=True, skip_reason="RAGAS 指标已关闭")
                 if self._ragas_enabled:
-                    full_chunks = []
-                    for s in stages:
-                        if s.get("stage") == "retrieval":
-                            full_chunks = (
-                                s.get("retrieved_chunks_full")
-                                or s.get("retrieved_chunks")
-                                or []
-                            )
-                            break
+                    # Corrective 回环后取末次（合并后）完整文本作为 RAGAS 上下文
+                    full_chunks = (
+                        _latest_retrieval_chunks(stages, full=True)
+                        or _latest_retrieval_chunks(stages, full=False)
+                    )
                     answer_text = reason + " " + " ".join(evidence_texts)
                     try:
                         ragas = await compute_ragas_metrics(

@@ -145,6 +145,11 @@ class Settings:
         self.RULE_DOCUMENTS_DIR: str = os.getenv("RULE_DOCUMENTS_DIR", "data/rule_documents")
         self.RULE_INDEX_DIR: str = os.getenv("RULE_INDEX_DIR", "data/rule_index")
 
+        # Corrective-RAG 回环：Judge 检出幻觉/遗漏时触发扩大检索 + 重新生成/校验
+        self.RULE_REVIEW_CORRECTIVE_ENABLED: bool = os.getenv(
+            "RULE_REVIEW_CORRECTIVE_ENABLED", "true"
+        ).lower() in ("true", "1", "yes")
+
         # ====== Redis 缓存配置（Phase 3）======
         self.REDIS_URL: str = os.getenv("REDIS_URL", "")
         self.REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "300"))

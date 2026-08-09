@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -255,6 +256,139 @@ class TestEvalRunnerWithMockPipeline:
         runner = EvalRunner(None)
         with pytest.raises(RuntimeError):
             await runner.run([], top_k=10)
+
+    @pytest.mark.asyncio
+    async def test_run_prefers_re_retrieval_chunks_for_hallucination(self):
+        """Corrective 回环：幻觉检测应基于末次（合并后）检索结果而非首轮。"""
+        cases = [
+            TestCase(
+                id="tc-corrective",
+                question="回环场景",
+                expected_decision="不符合",
+                expected_keywords=["760"],
+                difficulty="easy",
+            ),
+        ]
+
+        result = {
+            "query_id": "q_corrective",
+            "result": {
+                "decision": "不符合",
+                "reason": "修正后：电价800元/MWh超过上限760元/MWh",
+                "evidence": [
+                    {"source": "测试规则.pdf", "text": "省间日前现货出清电价上限为760元/MWh。"},
+                    {"source": "测试规则.pdf", "text": "申报电价不得高于限价申报标准。"},
+                ],
+                "confidence": 0.95,
+            },
+            "stages": [
+                # 首轮检索：证据缺失（旧检索）
+                {
+                    "stage": "retrieval",
+                    "retrieved_chunks": [
+                        {"chunk_id": "c1", "source": "测试规则.pdf", "text": "不相关内容"},
+                    ],
+                },
+                # 回环二次检索：合并后证据完整
+                {
+                    "stage": "re_retrieval",
+                    "triggered_by": "missing_rules",
+                    "result_count": 2,
+                    "retrieved_chunks": [
+                        {"chunk_id": "c1", "source": "测试规则.pdf", "text": "不相关内容"},
+                        {"chunk_id": "c2", "source": "测试规则.pdf", "text": "省间日前现货出清电价上限为760元/MWh。"},
+                        {"chunk_id": "c3", "source": "测试规则.pdf", "text": "申报电价不得高于限价申报标准。"},
+                    ],
+                },
+            ],
+        }
+
+        async def _fake_execute(req):
+            return result
+
+        pipeline = _FakePipelineWithStages.__new__(_FakePipelineWithStages)
+        pipeline.execute = _fake_execute
+
+        runner = EvalRunner(pipeline)
+        report: EvalReport = await runner.run(cases, top_k=10)
+
+        m = report.details[0]
+        # 修复前：只取首轮 retrieval → 证据全被误判为幻觉；
+        # 修复后：取末次 re_retrieval（合并后）→ 无幻觉
+        assert m.has_hallucination is False
+        assert m.hallucination_check_skipped is False
+        # recall@k 基于合并后 chunks
+        assert m.recall_at_k == 1.0
+
+    @pytest.mark.asyncio
+    async def test_run_prefers_re_retrieval_full_chunks_for_ragas(self):
+        """Corrective 回环：RAGAS 上下文应取末次（合并后）完整文本。"""
+        cases = [
+            TestCase(
+                id="tc-ragas-corrective",
+                question="回环场景",
+                expected_decision="不符合",
+                expected_keywords=["760"],
+                difficulty="easy",
+            ),
+        ]
+
+        result = {
+            "query_id": "q_ragas",
+            "result": {
+                "decision": "不符合",
+                "reason": "电价800元/MWh超过上限",
+                "evidence": [
+                    {"source": "测试规则.pdf", "text": "省间日前现货出清电价上限为760元/MWh。"},
+                ],
+                "confidence": 0.9,
+            },
+            "stages": [
+                {
+                    "stage": "retrieval",
+                    "retrieved_chunks_full": [
+                        {"chunk_id": "c1", "source": "x", "text": "旧内容"},
+                    ],
+                },
+                {
+                    "stage": "re_retrieval",
+                    "triggered_by": "hallucinated",
+                    "result_count": 2,
+                    "retrieved_chunks_full": [
+                        {"chunk_id": "c1", "source": "x", "text": "旧内容"},
+                        {"chunk_id": "c2", "source": "测试规则.pdf", "text": "省间日前现货出清电价上限为760元/MWh。"},
+                    ],
+                },
+            ],
+        }
+
+        async def _fake_execute(req):
+            return result
+
+        pipeline = _FakePipelineWithStages.__new__(_FakePipelineWithStages)
+        pipeline.execute = _fake_execute
+
+        from src.rule_review.llm_judge_metrics import RagasMetrics
+
+        captured = {}
+
+        async def _fake_ragas(question, answer_text, context_chunks, reference_answer="", model=None):
+            captured["context_chunks"] = context_chunks
+            return RagasMetrics()
+
+        runner = EvalRunner(pipeline)
+        with patch(
+            "src.rule_review.evaluation.compute_ragas_metrics",
+            side_effect=_fake_ragas,
+        ):
+            report: EvalReport = await runner.run(cases, top_k=10)
+
+        m = report.details[0]
+        assert m.has_hallucination is False
+        # RAGAS 收到的是合并后（末次 re_retrieval）的完整 chunks，包含二次检索新增的 c2
+        assert captured["context_chunks"] is not None
+        chunk_ids = [c.get("chunk_id") for c in captured["context_chunks"]]
+        assert "c2" in chunk_ids
 
 
 # ---------------------------------------------------------------------------
