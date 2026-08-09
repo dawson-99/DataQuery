@@ -22,6 +22,8 @@ import time
 from datetime import date, datetime
 from typing import Any
 
+from src.rule_review.tool_schema import validate_tool_args
+
 logger = logging.getLogger(__name__)
 
 # 工具循环限制
@@ -454,6 +456,11 @@ class ToolExecutor:
         func = ToolExecutor.TOOL_MAP.get(tool_name)
         if not func:
             return {"success": False, "error": f"未知工具: {tool_name}"}
+        # 参数 JSON Schema 校验：非法参数在进入函数前拦截，
+        # 返回 schema_error 信号，供 LLM 修正参数重试
+        ok, err = validate_tool_args(tool_name, args)
+        if not ok:
+            return {"success": False, "error": f"参数校验失败: {err}", "schema_error": True}
         try:
             return func(**args)
         except TypeError as e:
@@ -590,7 +597,14 @@ async def execute_with_tool_loop(
             })
 
         # 全部失败 → 降级
-        if all(not r["result"].get("success", False) for r in round_results):
+        # schema_error（参数校验失败）不算执行失败：结果仍注入给 LLM 修正参数重试；
+        # 只有执行类错误（unknown tool / TypeError / 异常）全部失败才降级
+        hard_failed = [
+            r for r in round_results
+            if not r["result"].get("success", False)
+            and not r["result"].get("schema_error", False)
+        ]
+        if len(hard_failed) == len(round_results) and round_results:
             logger.warning("[Tool] 第 %d 轮全部工具失败，降级", round_num)
             final = await _fallback_generate(
                 generator, messages, query, context_chunks,

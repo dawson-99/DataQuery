@@ -10,6 +10,16 @@
         "filter_value": "用于定位目标行的值（支持模糊匹配）",
         "select_column": "要提取数值的列名"
       },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["table_text", "filter_column", "filter_value", "select_column"],
+        "properties": {
+          "table_text": {"type": "string"},
+          "filter_column": {"type": "string"},
+          "filter_value": {"type": "string"},
+          "select_column": {"type": "string"}
+        }
+      },
       "output": {"value": "number", "unit": "string", "row_number": "int"}
     },
     "arithmetic_compare": {
@@ -22,6 +32,16 @@
         "threshold": "阈值",
         "threshold_high": "上限（仅 between 时需要）"
       },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["actual", "operator", "threshold"],
+        "properties": {
+          "actual": {"type": "number"},
+          "operator": {"type": "string", "enum": ["gt", "gte", "lt", "lte", "eq", "neq", "between"]},
+          "threshold": {"type": "number"},
+          "threshold_high": {"type": "number"}
+        }
+      },
       "output": {"result": "boolean", "expression": "string", "detail": "string"}
     },
     "resolve_cross_reference": {
@@ -30,6 +50,13 @@
       "triggers": ["参照", "按照", "依据", "按照...执行", "第X条", "详见"],
       "parameters": {
         "reference_text": "包含交叉引用语句的文本片段"
+      },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["reference_text"],
+        "properties": {
+          "reference_text": {"type": "string"}
+        }
       },
       "output": {"references": "array", "each": {"type": "string", "pattern": "string", "resolved_text": "string", "source": "string"}}
     },
@@ -41,6 +68,14 @@
         "rule_text": "包含日期信息的规则文本",
         "query_date": "查询日期，格式 YYYY-MM-DD"
       },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["rule_text", "query_date"],
+        "properties": {
+          "rule_text": {"type": "string"},
+          "query_date": {"type": "string"}
+        }
+      },
       "output": {"is_applicable": "boolean", "effective_date": "string", "expiry_date": "string|null", "version": "string", "reason": "string"}
     },
     "unit_converter": {
@@ -51,6 +86,15 @@
         "value": "待转换的数值",
         "from_unit": "原单位",
         "to_unit": "目标单位"
+      },
+      "parameters_schema": {
+        "type": "object",
+        "required": ["value", "from_unit", "to_unit"],
+        "properties": {
+          "value": {"type": "number"},
+          "from_unit": {"type": "string"},
+          "to_unit": {"type": "string"}
+        }
       },
       "output": {"value": "number", "unit": "string"}
     }
