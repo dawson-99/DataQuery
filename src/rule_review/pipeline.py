@@ -40,6 +40,7 @@ from src.rule_review.schemas import (
     RetrievalAudit,
     RuleReviewRequest,
     RuleReviewResult,
+    ToolCallLog,
 )
 
 logger = logging.getLogger(__name__)
@@ -612,6 +613,18 @@ class RuleReviewPipeline:
                             if corrective_loop_result else 1
                         ),
                     ),
+                    tool_executions=[
+                        ToolCallLog(
+                            query_id=query_id,
+                            round=t.get("round", 1),
+                            tool_name=t.get("tool_name", t.get("tool", "")),
+                            args=t.get("args", {}),
+                            result=t.get("result", {}),
+                            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            latency_ms=t.get("latency_ms", 0),
+                        )
+                        for t in tool_logs
+                    ],
                     judge_verification=judge_audit,
                     final_result=final_dict,
                     source_traceability=source_traces,

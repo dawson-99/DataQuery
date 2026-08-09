@@ -420,6 +420,89 @@ class TestRuleReviewPipelineStream:
         assert "done" in events[-1]
 
     @pytest.mark.asyncio
+    async def test_execute_stream_audit_records_tool_executions(self, mock_components):
+        """流式路径的审计记录必须包含 tool_executions（训练数据收集地基）。"""
+        rewriter, doc_store, retriever, generator, _ = mock_components
+
+        tool_call_output = LLMOutput(
+            decision="",
+            reason="",
+            evidence=[],
+            confidence=0.0,
+            tool_calls=[
+                {"tool": "extract_table_data", "args": {"filter_value": "冀北"}}
+            ],
+        )
+
+        async def _mock_generate(*args, **kwargs):
+            return tool_call_output
+
+        generator.generate = _mock_generate
+
+        final_result = LLMOutput(
+            decision="不符合",
+            reason="800元/MWh超过上限760元/MWh",
+            evidence=[],
+            confidence=0.95,
+        )
+        tool_logs = [
+            {
+                "round": 1,
+                "tool": "extract_table_data",
+                "args": {"filter_value": "冀北"},
+                "result": {"success": True, "data": {"value": 760}},
+                "latency_ms": 5,
+                "timestamp": "2026-01-01T00:00:00",
+            }
+        ]
+
+        mock_audit_store = MagicMock()
+        mock_audit_store.save = MagicMock()
+
+        with (
+            patch(
+                "src.rule_review.tool_executor.execute_with_tool_loop",
+                new=AsyncMock(return_value=(final_result.model_dump(), tool_logs)),
+            ),
+            patch(
+                "src.rule_review.judge.verify_with_fallback",
+                new=AsyncMock(
+                    return_value={
+                        "verified": True,
+                        "hallucinated_evidence": [],
+                        "judge_skipped": False,
+                        "decision": "不符合",
+                        "evidence": [],
+                        "confidence": 0.95,
+                    }
+                ),
+            ),
+        ):
+            pipeline = RuleReviewPipeline(
+                rewriter=rewriter,
+                document_store=doc_store,
+                retriever=retriever,
+                generator=generator,
+                judge=MagicMock(),
+                audit_store=mock_audit_store,
+            )
+            request = RuleReviewRequest(
+                question="2025年3月15日冀北的日前现货出清电价800元/MWh是否符合价格上限",
+                stream=True,
+            )
+            events = []
+            async for sse_line in pipeline.execute_stream(request):
+                events.append(sse_line)
+
+        # 审计记录被保存且含 tool_executions
+        assert mock_audit_store.save.called
+        record = mock_audit_store.save.call_args.args[0]
+        assert len(record.tool_executions) == 1
+        assert record.tool_executions[0].tool_name == "extract_table_data"
+        assert record.tool_executions[0].result["data"]["value"] == 760
+        assert "done" in events[-1]
+
+    @pytest.mark.asyncio
     async def test_execute_stream_clarification(self, mock_components):
         """问题不明确时应返回澄清追问并提前结束。"""
         rewriter, doc_store, retriever, generator, _ = mock_components
