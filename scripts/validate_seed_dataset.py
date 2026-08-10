@@ -32,9 +32,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from scripts.seed_signal_fields import EXCLUDED_KEYWORD_SLOTS, _dedup, source_whitelist
+
 DEFAULT_DATASET_PATH = "data/evaluation/rule_review_seed_dataset.json"
 DEFAULT_SPEC_PATH = "data/evaluation/rule_review_seed_spec.json"
 TOOLS_CONFIG_PATH = "data/env_variables/tools_config.json"
+
+# expected_keywords 约束：短实体（防整句误填拉高判分难度）
+MAX_KEYWORD_LEN = 12
+KEYWORD_BANNED_CHARS = "、。，"
 
 VALID_DECISIONS = ("符合", "不符合", "部分符合", "无法判断")
 VALID_DECISION_RULES = ("fixed", "gt760_bad", "gte_10000_good")
@@ -64,7 +70,67 @@ def _recompute_decision(evidence: dict) -> str | None:
     return None
 
 
-def validate_variant(variant: dict, tool_names: set[str]) -> list[str]:
+def _validate_signal_fields(
+    variant: dict, whitelist: set[str] | None
+) -> list[str]:
+    """校验判分信号字段（expected_keywords / expected_sources）。
+
+    缺失即跳过（向后兼容 v2 旧数据）；whitelist=None 时跳过来源白名单校验。
+    """
+    errors: list[str] = []
+    vid = variant.get("variant_id", "?")
+    kw = variant.get("expected_keywords")
+    srcs = variant.get("expected_sources")
+    if kw is None and srcs is None:
+        return errors  # v2 旧数据无信号字段
+
+    kw = kw or []
+    srcs = srcs or []
+    tools = variant.get("expected_tools", [])
+    # 双向强制：tools 空 ↔ signals 空（防负样本误标关键词导致模型编造证据）
+    if tools and not kw:
+        errors.append(f"[{vid}] 非负样本 expected_keywords 不能为空")
+    if not tools and kw:
+        errors.append(f"[{vid}] 负样本 expected_keywords 必须为空（与 expected_tools 空双向强制）")
+    if not tools and srcs:
+        errors.append(f"[{vid}] 负样本 expected_sources 必须为空")
+
+    for k in kw:
+        if not isinstance(k, str) or not k:
+            errors.append(f"[{vid}] expected_keywords 含非法元素: {k!r}")
+        elif len(k) > MAX_KEYWORD_LEN:
+            errors.append(f"[{vid}] expected_keywords 长度超 {MAX_KEYWORD_LEN}: {k!r}")
+        elif any(ch in k for ch in KEYWORD_BANNED_CHARS):
+            errors.append(f"[{vid}] expected_keywords 含标点: {k!r}")
+
+    if whitelist is not None:
+        for s in srcs:
+            if s not in whitelist:
+                errors.append(f"[{vid}] expected_sources 不在白名单: {s!r}")
+
+    # 一致性重算：evidence 记录的 static ∪ derived == 字段值（防手改漂移）
+    kw_evidence = variant.get("keyword_evidence")
+    if kw_evidence:
+        recomputed = _dedup(list(kw_evidence.get("static", [])) + list(kw_evidence.get("derived", [])))
+        if recomputed != kw:
+            errors.append(
+                f"[{vid}] expected_keywords 与 keyword_evidence 不一致"
+                f"（应 {recomputed}，实际 {kw}）"
+            )
+    src_evidence = variant.get("source_evidence")
+    if src_evidence:
+        recomputed = _dedup(list(src_evidence.get("static", [])) + list(src_evidence.get("derived", [])))
+        if recomputed != srcs:
+            errors.append(
+                f"[{vid}] expected_sources 与 source_evidence 不一致"
+                f"（应 {recomputed}，实际 {srcs}）"
+            )
+    return errors
+
+
+def validate_variant(
+    variant: dict, tool_names: set[str], whitelist: set[str] | None = None
+) -> list[str]:
     """校验单条种子，返回错误列表（空 = 合法）。"""
     errors: list[str] = []
     vid = variant.get("variant_id", "?")
@@ -102,17 +168,21 @@ def validate_variant(variant: dict, tool_names: set[str]) -> list[str]:
                 f"[{vid}] expected_decision {decision!r} 与数值基线不一致"
                 f"（应 {recomputed!r}，依据 {evidence}）"
             )
+
+    errors.extend(_validate_signal_fields(variant, whitelist))
     return errors
 
 
 def validate_dataset(
-    dataset: dict, tool_names: set[str]
+    dataset: dict,
+    tool_names: set[str],
+    whitelist: set[str] | None = None,
 ) -> tuple[list[str], list[dict]]:
     """校验全部种子，返回（错误列表, 合法种子列表）。"""
     errors: list[str] = []
     valid = []
     for variant in dataset.get("seeds", []):
-        errs = validate_variant(variant, tool_names)
+        errs = validate_variant(variant, tool_names, whitelist)
         if errs:
             errors.extend(errs)
         else:
@@ -148,12 +218,14 @@ def build_stats(seeds: list[dict]) -> dict:
         queries.add(seed.get("query", ""))
 
     total = len(seeds)
+    judge = sum(1 for s in seeds if s.get("expected_decision", "") in ("符合", "不符合", "部分符合"))
     return {
         "total": total,
         "by_category": dict(sorted(by_category.items(), key=lambda x: -x[1])),
         "by_tool": dict(sorted(by_tool.items(), key=lambda x: -x[1])),
         "by_decision": by_decision,
         "negative_ratio": round(negative / total, 3) if total else 0.0,
+        "judge_ratio": round(judge / total, 3) if total else 0.0,
         "template_count": len(template_ids),
         "unique_query_count": len(queries),
     }
@@ -164,12 +236,14 @@ def build_stats(seeds: list[dict]) -> dict:
 # ============================================================================
 
 
-def validate_spec(spec: dict) -> list[str]:
+def validate_spec(spec: dict, whitelist: set[str] | None = None) -> list[str]:
     """校验句式模板与槽位词表，返回错误列表。"""
     errors: list[str] = []
     slot_vocab = spec.get("slot_vocab", {})
     templates = spec.get("templates", [])
     tool_names = load_tool_names()
+    if whitelist is None:
+        whitelist = set(source_whitelist(spec.get("facts", {}), slot_vocab))
 
     for template in templates:
         tid = template.get("template_id", "?")
@@ -191,6 +265,27 @@ def validate_spec(spec: dict) -> list[str]:
             errors.append(
                 f"[{tid}] query_template 槽位 {sorted(used)} ≠ slots 声明 {sorted(declared)}"
             )
+        # 判分信号字段（v3 强制声明；负样本可为空列表）
+        if "expected_keywords" not in template or "expected_sources" not in template:
+            errors.append(f"[{tid}] 缺失 expected_keywords / expected_sources 字段（v3 必须声明）")
+            continue
+        static_kw = template.get("expected_keywords", [])
+        static_src = template.get("expected_sources", [])
+        if template.get("expected_tools") and not static_kw:
+            # 静态可空（locate 类靠条款号/文档名派生），但必须有派生源槽位，
+            # 否则 variant 级 expected_keywords 会空（validate_variant 强制）
+            derived_slots = [s for s in template.get("slots", [])
+                             if s not in EXCLUDED_KEYWORD_SLOTS]
+            if not derived_slots:
+                errors.append(
+                    f"[{tid}] 非负样本 expected_keywords 为空且无派生槽位"
+                    f"（variant 级会空）")
+        for k in static_kw:
+            if len(k) > MAX_KEYWORD_LEN or any(ch in k for ch in KEYWORD_BANNED_CHARS):
+                errors.append(f"[{tid}] expected_keywords 不合规: {k!r}")
+        for s in static_src:
+            if s not in whitelist:
+                errors.append(f"[{tid}] expected_sources 不在白名单: {s!r}")
     return errors
 
 
@@ -214,8 +309,9 @@ def main() -> None:
         spec = json.load(f)
 
     tool_names = load_tool_names()
-    spec_errors = validate_spec(spec)
-    dataset_errors, valid = validate_dataset(dataset, tool_names)
+    whitelist = set(source_whitelist(spec.get("facts", {}), spec.get("slot_vocab", {})))
+    spec_errors = validate_spec(spec, whitelist)
+    dataset_errors, valid = validate_dataset(dataset, tool_names, whitelist)
 
     print("=== 规格层校验 ===")
     if spec_errors:
@@ -239,7 +335,9 @@ def main() -> None:
     print(f"  按工具: {stats['by_tool']}")
     print(f"  按决策: {stats['by_decision']}")
     print(f"  负样本占比: {stats['negative_ratio']:.1%}")
+    print(f"  判定型占比: {stats['judge_ratio']:.1%}（目标 25-30%）")
     print(f"  词表实体数: {spec_vocab_stats(spec)}")
+    print(f"  来源白名单: {sorted(whitelist)}")
 
     if spec_errors or dataset_errors:
         sys.exit(1)

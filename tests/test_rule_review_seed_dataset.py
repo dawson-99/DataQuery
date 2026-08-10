@@ -28,6 +28,13 @@ from scripts.build_seed_dataset import (  # noqa: E402
     render_query,
     resolve_slot_values,
 )
+from scripts.seed_signal_fields import (  # noqa: E402
+    _dedup,
+    derive_keywords,
+    derive_sources,
+    merge_signals,
+    source_whitelist,
+)
 from scripts.validate_seed_dataset import (  # noqa: E402
     build_stats,
     validate_dataset,
@@ -347,9 +354,200 @@ class TestBuildStats:
 # ============================================================================
 
 
+# ============================================================================
+# 判分信号字段派生（v3）
+# ============================================================================
+
+
+class TestMergeSignals:
+    def test_merge_static_and_derived(self):
+        assignment = {
+            "region": {"text": "冀北"},
+            "price": {"text": "800元/MWh", "mwh": 800},
+        }
+        out = merge_signals(
+            ["价格上限", "760"], ["省间电力现货交易规则"],
+            assignment, ["region", "price"])
+        assert out["expected_keywords"] == ["价格上限", "760", "冀北", "800元/MWh", "800"]
+        assert out["keyword_evidence"] == {
+            "static": ["价格上限", "760"], "derived": ["冀北", "800元/MWh", "800"],
+        }
+        assert out["expected_sources"] == ["省间电力现货交易规则"]
+        assert out["source_evidence"] == {"static": ["省间电力现货交易规则"], "derived": []}
+
+    def test_dedup_keep_first(self):
+        # static 与 derived 重复 → 去重保留首现
+        assignment = {"price": {"text": "760", "mwh": 760}}
+        out = merge_signals(["价格上限", "760"], [], assignment, ["price"])
+        assert out["expected_keywords"] == ["价格上限", "760"]
+
+    def test_excluded_slots_not_derived(self):
+        # out_region 语义是未命中→修正，强制复述会误罚 recovery
+        assignment = {"out_region": {"text": "华北"}}
+        out = merge_signals(["上限"], [], assignment, ["out_region"])
+        assert out["expected_keywords"] == ["上限"]
+        assert out["keyword_evidence"]["derived"] == []
+
+    def test_doc_slot_derives_sources(self):
+        assignment = {"doc_name": {"text": "省间电力现货交易规则"}}
+        out = merge_signals([], [], assignment, ["doc_name"])
+        assert out["expected_sources"] == ["省间电力现货交易规则"]
+        assert out["source_evidence"]["derived"] == ["省间电力现货交易规则"]
+
+    def test_mwh_derived_numeric(self):
+        assignment = {"price": {"text": "0.8元/kWh", "mwh": 800}}
+        out = merge_signals(["价格上限"], [], assignment, ["price"])
+        assert out["expected_keywords"] == ["价格上限", "0.8元/kWh", "800"]
+
+    def test_derive_keywords_direct(self):
+        assert derive_keywords(
+            {"region": {"text": "冀北"}, "no_such_article": {"text": "99"}},
+            ["region", "no_such_article"]) == ["冀北"]
+
+    def test_derive_sources_direct(self):
+        assert derive_sources(
+            {"doc_name": {"text": "省间电力现货交易规则"},
+             "other_doc_name": {"text": "省内电力交易规则"},
+             "region": {"text": "冀北"}},
+            ["doc_name", "other_doc_name", "region"]) == \
+            ["省间电力现货交易规则", "省内电力交易规则"]
+
+    def test_source_whitelist(self):
+        facts = {"docs": ["省间电力现货交易规则.pdf", "省内电力交易规则.pdf"]}
+        vocab = {"doc_name": ["电力市场监管办法"], "other_doc_name": ["电力市场运营基本规则"]}
+        assert source_whitelist(facts, vocab) == [
+            "电力市场监管办法", "电力市场运营基本规则",
+            "省内电力交易规则", "省间电力现货交易规则",
+        ]
+
+
+class TestValidateVariantSignals:
+    WHITELIST = {"省间电力现货交易规则"}
+
+    @staticmethod
+    def _base(**over):
+        v = {
+            "variant_id": "v1",
+            "query": "800元/MWh是否超过价格上限？",
+            "expected_tools": ["extract_table_data"],
+            "expected_workflow": "extract_table_data(x)",
+            "expected_decision": "不符合",
+            "expected_keywords": ["价格上限", "760", "800元/MWh", "800"],
+            "keyword_evidence": {"static": ["价格上限", "760"], "derived": ["800元/MWh", "800"]},
+            "expected_sources": ["省间电力现货交易规则"],
+            "source_evidence": {"static": ["省间电力现货交易规则"], "derived": []},
+        }
+        v.update(over)
+        return v
+
+    def test_valid_signals(self):
+        assert validate_variant(self._base(), _TOOL_NAMES, self.WHITELIST) == []
+
+    def test_negative_with_keywords_intercepted(self):
+        v = self._base(expected_tools=[], expected_workflow="", expected_decision="无法判断")
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("负样本" in e for e in errors)
+
+    def test_non_negative_without_keywords_intercepted(self):
+        v = self._base(expected_keywords=[], keyword_evidence=None)
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("不能为空" in e for e in errors)
+
+    def test_keyword_too_long(self):
+        v = self._base(expected_keywords=["价格上限规定的具体数值是多少元每兆瓦时", "760"])
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("长度超" in e for e in errors)
+
+    def test_keyword_with_punctuation(self):
+        v = self._base(expected_keywords=["价格上限，760", "760"])
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("含标点" in e for e in errors)
+
+    def test_source_not_in_whitelist(self):
+        v = self._base(expected_sources=["不存在的文档"])
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("白名单" in e for e in errors)
+
+    def test_keyword_evidence_mismatch(self):
+        v = self._base(keyword_evidence={"static": ["价格上限"], "derived": ["800元/MWh"]})
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("keyword_evidence" in e for e in errors)
+
+    def test_source_evidence_mismatch(self):
+        v = self._base(source_evidence={"static": ["省内电力交易规则"], "derived": []})
+        errors = validate_variant(v, _TOOL_NAMES, self.WHITELIST)
+        assert any("source_evidence" in e for e in errors)
+
+    def test_old_data_without_signals_skipped(self):
+        # v2 旧数据无信号字段（键缺失）→ 跳过信号校验（向后兼容）
+        v = self._base()
+        for k in ("expected_keywords", "keyword_evidence",
+                  "expected_sources", "source_evidence"):
+            del v[k]
+        assert validate_variant(v, _TOOL_NAMES, self.WHITELIST) == []
+
+
+class TestValidateSpecSignals:
+    @staticmethod
+    def _spec(template_extra: dict):
+        tpl = {
+            "template_id": "t",
+            "query_template": "{region}的上限是多少？",
+            "slots": ["region"],
+            "expected_tools": ["extract_table_data"],
+            "expected_workflow": "extract_table_data(region)",
+            "decision_rule": "fixed",
+            "expected_decision": "无法判断",
+            "expected_keywords": ["价格上限"],
+            "expected_sources": ["省间电力现货交易规则"],
+        }
+        tpl.update(template_extra)
+        return {
+            "facts": {"docs": ["省间电力现货交易规则.pdf"]},
+            "slot_vocab": {"region": ["冀北"]},
+            "templates": [tpl],
+        }
+
+    def test_valid_spec_signals(self):
+        assert validate_spec(self._spec({})) == []
+
+    def test_spec_missing_fields_reported(self):
+        spec = self._spec({})
+        del spec["templates"][0]["expected_keywords"]
+        errors = validate_spec(spec)
+        assert any("必须声明" in e for e in errors)
+
+    def test_spec_non_negative_empty_keywords_no_derived_slots(self):
+        # 静态空且无派生槽位 → variant 级会空，必须拦截
+        spec = self._spec({
+            "query_template": "电力交易的价格上限是多少？",
+            "slots": [], "expected_keywords": [],
+        })
+        errors = validate_spec(spec)
+        assert any("无派生槽位" in e for e in errors)
+
+    def test_spec_non_negative_empty_keywords_with_derived_slots_ok(self):
+        # 静态空但有派生槽位（locate 类）→ 允许，由槽位派生补足
+        spec = self._spec({"expected_keywords": []})
+        assert validate_spec(spec) == []
+
+    def test_spec_source_not_in_whitelist(self):
+        errors = validate_spec(self._spec({"expected_sources": ["不存在的文档"]}))
+        assert any("白名单" in e for e in errors)
+
+    def test_spec_negative_empty_signals_ok(self):
+        spec = self._spec({
+            "expected_tools": [], "expected_workflow": "",
+            "expected_decision": "无法判断",
+            "expected_keywords": [], "expected_sources": [],
+        })
+        assert validate_spec(spec) == []
+
+
 class TestValidateSpec:
     def test_valid_spec(self):
         spec = {
+            "facts": {"docs": ["省间电力现货交易规则.pdf"]},
             "slot_vocab": {"region": ["冀北"]},
             "templates": [{
                 "template_id": "t",
@@ -359,6 +557,8 @@ class TestValidateSpec:
                 "expected_workflow": "extract_table_data(region)",
                 "decision_rule": "fixed",
                 "expected_decision": "无法判断",
+                "expected_keywords": ["价格上限"],
+                "expected_sources": ["省间电力现货交易规则"],
             }],
         }
         assert validate_spec(spec) == []
@@ -419,7 +619,7 @@ class TestValidateSpec:
 
 @pytest.fixture(scope="module")
 def real_dataset():
-    """用真实 spec 生成数据集（不写盘），返回 (dataset, spec, tool_names)。"""
+    """用真实 spec 生成数据集（不写盘），返回 (dataset, spec, tool_names, whitelist)。"""
     spec_path = _PROJECT_ROOT / _SPEC_PATH
     if not spec_path.exists():
         pytest.skip("spec 文件不存在，跳过集成测试")
@@ -429,27 +629,47 @@ def real_dataset():
               "r", encoding="utf-8") as f:
         tools_config = json.load(f)
     tool_names = set(tools_config["tools"].keys())
+    whitelist = set(source_whitelist(spec.get("facts", {}), spec.get("slot_vocab", {})))
 
-    from scripts.build_seed_dataset import build_dataset
-    variants, _stats = build_dataset(str(spec_path))
-    return {"seeds": variants}, spec, tool_names
+    from scripts.build_seed_dataset import DEFAULT_TARGET_COUNT, build_dataset
+    variants, _stats = build_dataset(str(spec_path), DEFAULT_TARGET_COUNT)
+    return {"seeds": variants}, spec, tool_names, whitelist
 
 
 class TestIntegration:
     def test_spec_valid(self, real_dataset):
-        _dataset, spec, _tools = real_dataset
+        _dataset, spec, _tools, _wl = real_dataset
         assert validate_spec(spec) == []
 
     def test_all_variants_valid(self, real_dataset):
-        dataset, _spec, tool_names = real_dataset
-        errors, valid = validate_dataset(dataset, tool_names)
+        dataset, _spec, tool_names, whitelist = real_dataset
+        errors, valid = validate_dataset(dataset, tool_names, whitelist)
         assert errors == [], f"前 5 条错误: {errors[:5]}"
 
     def test_count_reasonable(self, real_dataset):
-        dataset, _spec, _tools = real_dataset
-        assert len(dataset["seeds"]) >= 900, "条数不足 900"
+        dataset, _spec, _tools, _wl = real_dataset
+        assert len(dataset["seeds"]) >= 1500, "条数不足 1500"
+
+    def test_judge_ratio_in_range(self, real_dataset):
+        dataset, _spec, _tools, _wl = real_dataset
+        stats = build_stats(dataset["seeds"])
+        assert 0.25 <= stats["judge_ratio"] <= 0.30, \
+            f"判定型占比 {stats['judge_ratio']} 超出 [25%, 30%]"
 
     def test_tool_coverage(self, real_dataset):
-        dataset, _spec, _tools = real_dataset
+        dataset, _spec, _tools, _wl = real_dataset
         stats = build_stats(dataset["seeds"])
         assert len(stats["by_tool"]) >= 9, f"工具覆盖不足: {stats['by_tool']}"
+
+    def test_signal_fields_consistent(self, real_dataset):
+        """所有变体的 keyword/source_evidence 重算与字段值一致（同 build 的去重规则）。"""
+        dataset, _spec, _tools, _wl = real_dataset
+        for v in dataset["seeds"]:
+            if "keyword_evidence" in v:
+                recomputed = _dedup(list(v["keyword_evidence"]["static"])
+                                    + list(v["keyword_evidence"]["derived"]))
+                assert v["expected_keywords"] == recomputed, v["variant_id"]
+            if "source_evidence" in v:
+                recomputed = _dedup(list(v["source_evidence"]["static"])
+                                    + list(v["source_evidence"]["derived"]))
+                assert v["expected_sources"] == recomputed, v["variant_id"]

@@ -2,7 +2,8 @@
 """
 句式模板 × 槽位词表 → 完整种子数据集
 ======================================
-输入：data/evaluation/rule_review_seed_spec.json（v2：facts + slot_vocab + templates）
+输入：data/evaluation/rule_review_seed_spec.json（v3：facts + slot_vocab + templates，
+      模板含判分信号字段 expected_keywords / expected_sources）
 输出：data/evaluation/rule_review_seed_dataset.json（完整种子，无占位符）
 
 扩量机制（两步走）：
@@ -13,8 +14,12 @@
   decision_rule = "gt760_bad" → 填入槽位的数值 mwh > facts.price_cap_mwh(760) → 不符合，否则符合
   decision_rule = "fixed"     → 模板固定 expected_decision 值
 
+证据信号（v3）：每条变体携带 expected_keywords / expected_sources（RL 判分真值），
+  由模板静态声明 + 槽位自动派生合并（scripts/seed_signal_fields.py），
+  keyword_evidence / source_evidence 记录双轨来源供校验重算。
+
 使用：
-  python scripts/build_seed_dataset.py [--spec ...] [--output ...] [--target-count 1000]
+  python scripts/build_seed_dataset.py [--spec ...] [--output ...] [--target-count 1800]
 """
 
 from __future__ import annotations
@@ -30,11 +35,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from scripts.seed_signal_fields import merge_signals
+
 DEFAULT_SPEC_PATH = "data/evaluation/rule_review_seed_spec.json"
 DEFAULT_OUTPUT_PATH = "data/evaluation/rule_review_seed_dataset.json"
 # 每个句式模板的变体上限：防止组合爆炸的模板（如 region×price×date）
 # 挤占小组合模板的分布，保证 9 工具训练数据均衡
 TEMPLATE_VARIANT_CAP = 25
+# RL 种子集规模：9 工具链全覆盖 + 判定型 25-30% + 负样本 10-15% 的推算值
+DEFAULT_TARGET_COUNT = 1800
 
 VALID_DECISIONS = ("符合", "不符合", "部分符合", "无法判断")
 
@@ -141,6 +150,23 @@ def generate_variants(
             except (KeyError, IndexError):
                 pass  # workflow 含非槽位占位符时保持原样
         decision = compute_decision(template, combo, facts, slot_vocab)
+        # 证据信号：静态（模板声明）+ 槽位派生，keyword/source_evidence
+        # 与 decision_evidence 同构，供校验脚本重算比对防手改漂移。
+        # 负样本（无工具）强制两字段为空：防模型编造证据
+        if template.get("expected_tools"):
+            signals = merge_signals(
+                template.get("expected_keywords", []),
+                template.get("expected_sources", []),
+                combo,
+                slot_names,
+            )
+        else:
+            signals = {
+                "expected_keywords": [],
+                "keyword_evidence": {"static": [], "derived": []},
+                "expected_sources": [],
+                "source_evidence": {"static": [], "derived": []},
+            }
         variants.append({
             "variant_id": f"{template['template_id']}_{i:03d}",
             "template_id": template["template_id"],
@@ -152,6 +178,11 @@ def generate_variants(
             "decision_rule": template.get("decision_rule", "fixed"),
             # 决策依据：供校验脚本重算比对（决策与数值基线一致性检查）
             "decision_evidence": _build_decision_evidence(template, combo, facts),
+            # RL 判分真值：证据信号（静态 + 派生双轨）
+            "expected_keywords": signals["expected_keywords"],
+            "keyword_evidence": signals["keyword_evidence"],
+            "expected_sources": signals["expected_sources"],
+            "source_evidence": signals["source_evidence"],
         })
     return variants
 
@@ -275,7 +306,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="句式×槽位 → 完整种子数据集")
     parser.add_argument("--spec", default=DEFAULT_SPEC_PATH)
     parser.add_argument("--output", default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument("--target-count", type=int, default=1000)
+    parser.add_argument("--target-count", type=int, default=DEFAULT_TARGET_COUNT)
     args = parser.parse_args()
 
     variants, stats = build_dataset(args.spec, args.target_count)
@@ -283,7 +314,7 @@ def main() -> None:
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({"version": 2, "count": len(variants), "seeds": variants},
+        json.dump({"version": 3, "count": len(variants), "seeds": variants},
                   f, ensure_ascii=False, indent=2)
 
     print(f"句式模板: {stats['templates']} 个")
