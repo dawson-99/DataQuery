@@ -142,6 +142,10 @@ class TestGenerateVariants:
         # 工具链继承
         assert variants[0]["expected_tools"] == ["extract_table_data", "arithmetic_compare"]
         assert variants[0]["template_id"] == "compare_001"
+        # 决策依据记录（供校验重算）
+        assert variants[0]["decision_evidence"] == {
+            "rule": "gt760_bad", "mwh": 800, "baseline": 760
+        }
 
     def test_max_variants_uniform_slice(self):
         tpl = {
@@ -249,6 +253,54 @@ class TestValidateVariant:
             "expected_tools": [],
             "expected_workflow": "",
             "expected_decision": "无法判断",
+        }
+        assert validate_variant(v, _TOOL_NAMES) == []
+
+    def test_decision_baseline_consistent(self):
+        # 800 > 760 → 不符合，决策与依据一致
+        v = {
+            "variant_id": "v1",
+            "query": "800元/MWh是否超过价格上限？",
+            "expected_tools": ["extract_table_data", "arithmetic_compare"],
+            "expected_workflow": "extract_table_data(x) → arithmetic_compare(800 gt 760)",
+            "expected_decision": "不符合",
+            "decision_evidence": {"rule": "gt760_bad", "mwh": 800, "baseline": 760},
+        }
+        assert validate_variant(v, _TOOL_NAMES) == []
+
+    def test_decision_baseline_inconsistent(self):
+        # 800 > 760 却标 符合 → 校验必须拦截
+        v = {
+            "variant_id": "v1",
+            "query": "800元/MWh是否超过价格上限？",
+            "expected_tools": ["extract_table_data", "arithmetic_compare"],
+            "expected_workflow": "extract_table_data(x) → arithmetic_compare(800 gt 760)",
+            "expected_decision": "符合",
+            "decision_evidence": {"rule": "gt760_bad", "mwh": 800, "baseline": 760},
+        }
+        errors = validate_variant(v, _TOOL_NAMES)
+        assert any("与数值基线不一致" in e for e in errors)
+
+    def test_decision_evidence_gte_10000(self):
+        # 5000 < 10000 → 不符合
+        v = {
+            "variant_id": "v1",
+            "query": "5000kWh是否满足要求？",
+            "expected_tools": ["extract_table_data", "arithmetic_compare"],
+            "expected_workflow": "extract_table_data(x) → arithmetic_compare(5000 gte 10000)",
+            "expected_decision": "不符合",
+            "decision_evidence": {"rule": "gte_10000_good", "mwh": 5000, "baseline": 10000},
+        }
+        assert validate_variant(v, _TOOL_NAMES) == []
+
+    def test_decision_evidence_missing_skipped(self):
+        # 无 decision_evidence 的旧数据不拦截（向后兼容）
+        v = {
+            "variant_id": "v1",
+            "query": "800元/MWh是否超过价格上限？",
+            "expected_tools": ["extract_table_data", "arithmetic_compare"],
+            "expected_workflow": "extract_table_data(x) → arithmetic_compare(800 gt 760)",
+            "expected_decision": "符合",
         }
         assert validate_variant(v, _TOOL_NAMES) == []
 

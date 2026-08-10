@@ -140,6 +140,7 @@ def generate_variants(
                 workflow = render_query(workflow, combo)
             except (KeyError, IndexError):
                 pass  # workflow 含非槽位占位符时保持原样
+        decision = compute_decision(template, combo, facts, slot_vocab)
         variants.append({
             "variant_id": f"{template['template_id']}_{i:03d}",
             "template_id": template["template_id"],
@@ -147,10 +148,27 @@ def generate_variants(
             "query": query,
             "expected_tools": list(template.get("expected_tools", [])),
             "expected_workflow": workflow,
-            "expected_decision": compute_decision(template, combo, facts, slot_vocab),
+            "expected_decision": decision,
             "decision_rule": template.get("decision_rule", "fixed"),
+            # 决策依据：供校验脚本重算比对（决策与数值基线一致性检查）
+            "decision_evidence": _build_decision_evidence(template, combo, facts),
         })
     return variants
+
+
+def _build_decision_evidence(template: dict, assignment: dict, facts: dict) -> dict:
+    """记录自动重判的依据（rule/mwh/baseline），fixed 只记 rule。"""
+    rule = template.get("decision_rule", "fixed")
+    if rule == "fixed":
+        return {"rule": "fixed"}
+    mwh = has_mwh(assignment)
+    if rule == "gt760_bad":
+        baseline = facts.get("price_cap_mwh", 760)
+    elif rule == "gte_10000_good":
+        baseline = facts.get("min_quantity_kwh", 10000)
+    else:
+        baseline = 0
+    return {"rule": rule, "mwh": mwh, "baseline": baseline}
 
 
 # ============================================================================

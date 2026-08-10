@@ -54,6 +54,16 @@ def load_tool_names() -> set[str]:
 # ============================================================================
 
 
+def _recompute_decision(evidence: dict) -> str | None:
+    """按决策依据重算决策，用于一致性比对。"""
+    rule = evidence.get("rule")
+    if rule == "gt760_bad":
+        return "不符合" if evidence["mwh"] > evidence["baseline"] else "符合"
+    if rule == "gte_10000_good":
+        return "符合" if evidence["mwh"] >= evidence["baseline"] else "不符合"
+    return None
+
+
 def validate_variant(variant: dict, tool_names: set[str]) -> list[str]:
     """校验单条种子，返回错误列表（空 = 合法）。"""
     errors: list[str] = []
@@ -82,6 +92,16 @@ def validate_variant(variant: dict, tool_names: set[str]) -> list[str]:
             f"[{vid}] expected_workflow 提及工具 {sorted(mentioned)} "
             f"≠ expected_tools {sorted(tools)}"
         )
+
+    # 决策与数值基线一致性：按 decision_evidence 重算比对
+    evidence = variant.get("decision_evidence")
+    if evidence and evidence.get("rule") != "fixed":
+        recomputed = _recompute_decision(evidence)
+        if recomputed is not None and decision != recomputed:
+            errors.append(
+                f"[{vid}] expected_decision {decision!r} 与数值基线不一致"
+                f"（应 {recomputed!r}，依据 {evidence}）"
+            )
     return errors
 
 

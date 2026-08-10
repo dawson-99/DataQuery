@@ -113,19 +113,64 @@
 - 1000 条 query 去重率 100%
 - 单工具参数多样性：region ≥ 15、price ≥ 8
 
-## 7. 生成与校验流程
+## 7. 种子数据集评估方法
+
+评估分**三层**：① 自动化结构校验（脚本强制，全量）→ ② 自动化决策一致性校验（脚本强制，全量）→ ③ 人工语义抽检（抽样）。前两层由 `scripts/validate_seed_dataset.py` 全量执行。
+
+### 7.1 规格层校验（模板与词表本身）
+
+| 检查项 | 说明 |
+|---|---|
+| 槽位引用存在 | 模板 `slots` 声明的每个槽位都必须在 `slot_vocab` 中定义 |
+| 占位符一致性 | `query_template` 中出现的 `{占位符}` 集合 == `slots` 声明集合（多写/漏写都报错） |
+| decision_rule 合法 | ∈ {fixed, gt760_bad, gte_10000_good}；fixed 时 `expected_decision` ∈ 4 枚举 |
+| 工具名合法 | `expected_tools` 每个工具 ∈ `tools_config.json` 白名单 |
+
+### 7.2 数据集层校验（每条生成种子）
+
+| 检查项 | 说明 |
+|---|---|
+| 占位符残留 | query 中不得出现 `{` / `}`（生成时替换必须彻底） |
+| 工具名合法 | 同规格层 |
+| 决策枚举 | `expected_decision` ∈ {符合, 不符合, 部分符合, 无法判断} |
+| workflow 一致性 | `expected_workflow` 中提及的工具名集合（按 `工具名(` 正则提取）== `expected_tools` 集合——防「写了工具链但没声明工具」或反之 |
+| **决策与数值基线一致性** | 每条变体携带 `decision_evidence`（{rule, mwh, baseline}，生成时记录），校验时按规则重算比对：`gt760_bad`：mwh > 760 → 不符合；`gte_10000_good`：kwh ≥ 10000 → 符合。**决策与依据不符即拦截**——防止人工改词表/决策时引入系统性标注错误 |
+
+### 7.3 覆盖统计（多样性指标，防「数据全面但集中」）
+
+| 指标 | 目标 |
+|---|---|
+| 总条数 | 1000 |
+| 9 工具全覆盖 | 每工具 ≥ 30 条（主工具 extract/compare/locate 越多越好） |
+| 负样本占比 | 10-15%（无工具题，防工具滥用） |
+| 句式模板数 | ≥ 100（句式多样性——同一语义问法越多，模型泛化越强） |
+| query 去重率 | 100%（模板×槽位组合冲突会暴露为重复） |
+| 词表实体多样性 | region ≥ 15、price ≥ 8、含单位混用变体 |
+
+### 7.4 人工抽检（语义层，脚本无法覆盖）
+
+- 从 12 个类别各抽 1-2 条，重点核对：**工具链选择是否正确**（该用 unit_converter 却只调 compare？）、**决策标注是否正确**、**query 是否自然**（真实用户不会这么问）
+- 抽检发现的问题回改 `rule_review_seed_spec.json`（模板/词表），**重跑生成**（决策自动重判）而非手改数据集——保证「规格是唯一事实源」
+
+### 7.5 后续阶段的扩展评估（本次未做）
+
+- **执行回测**：把每条种子的 `expected_tools` 参数用 `ToolExecutor` 真实执行，验证「工具链能跑通、结果与决策一致」——语义正确性的自动化延伸
+- **模型评测**：冻结测试集（`test_cases.json`），三档模型（qwen3-max / SFT / GRPO）对比 decision_accuracy 与工具调用率——数据集有效性的最终检验
+
+## 8. 生成与校验流程
 
 ```bash
 # 1. 编辑 data/evaluation/rule_review_seed_spec.json（加句式/加词表）
-# 2. 生成 1000 条完整种子（无占位符残留）
+# 2. 生成 1000 条完整种子（无占位符残留，决策自动重判）
 conda run -n dataquery python scripts/build_seed_dataset.py
-# 3. 校验 + 覆盖统计
+# 3. 三层评估：规格层 + 数据集层 + 覆盖统计
 conda run -n dataquery python scripts/validate_seed_dataset.py
-# 4. 单元测试
+# 4. 人工抽检 12 类代表样本
+# 5. 单元测试
 conda run -n dataquery python -m pytest tests/test_rule_review_seed_dataset.py -q
 ```
 
-## 8. 扩量原则（从 1000 条继续扩）
+## 9. 扩量原则（从 1000 条继续扩）
 
 1. **先加句式再加词表**：同一语义新问法（如倒装、反问、省略）比加一个地区更有价值
 2. **每模板组合数设上限**（`TEMPLATE_VARIANT_CAP=25`）：防组合爆炸的模板挤占小模板分布，保持 9 工具均衡
