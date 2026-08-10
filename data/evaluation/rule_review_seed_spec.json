@@ -1,212 +1,1285 @@
 {
-  "version": 1,
-  "description": "规则审查 SFT 种子规格：用户 query + 期望工具工作流 + 期望决策。由 build_rule_review_seeds.py 蒸馏生成完整训练样本。",
+  "version": 2,
+  "description": "规则审查种子规格 v2：句式模板（templates）+ 全局槽位词表（slot_vocab）。由 scripts/build_seed_dataset.py 组合生成完整种子数据集（句式改写 × 槽位替换）。",
   "facts": {
     "price_cap_mwh": 760,
-    "docs": ["省间电力现货交易规则.pdf", "省内电力交易规则.pdf", "电力市场监管办法.pdf"],
-    "regions": ["冀北", "山西", "蒙东", "蒙西", "四川主网"],
-    "dates": ["2025-03-15", "2025-06-01", "2024-12-31"]
+    "min_quantity_kwh": 10000,
+    "regions": ["冀北", "山西", "蒙东", "蒙西", "四川主网", "京津唐", "辽宁", "吉林", "黑龙江", "山东"],
+    "docs": ["省间电力现货交易规则.pdf", "省内电力交易规则.pdf", "电力市场监管办法.pdf"]
   },
-  "seeds": [
+  "slot_vocab": {
+    "region": [
+      "冀北", "山西", "蒙东", "蒙西", "四川主网", "京津唐", "辽宁", "吉林", "黑龙江",
+      "山东", "陕西", "甘肃", "宁夏", "青海", "新疆", "福建", "广东", "湖南", "湖北", "河南"
+    ],
+    "price": [
+      {"text": "800元/MWh", "mwh": 800},
+      {"text": "810元/MWh", "mwh": 810},
+      {"text": "820元/MWh", "mwh": 820},
+      {"text": "850元/MWh", "mwh": 850},
+      {"text": "900元/MWh", "mwh": 900},
+      {"text": "620元/MWh", "mwh": 620},
+      {"text": "650元/MWh", "mwh": 650},
+      {"text": "700元/MWh", "mwh": 700},
+      {"text": "720元/MWh", "mwh": 720},
+      {"text": "750元/MWh", "mwh": 750},
+      {"text": "760元/MWh", "mwh": 760}
+    ],
+    "price_above": [
+      {"text": "800元/MWh", "mwh": 800},
+      {"text": "810元/MWh", "mwh": 810},
+      {"text": "820元/MWh", "mwh": 820},
+      {"text": "850元/MWh", "mwh": 850},
+      {"text": "900元/MWh", "mwh": 900}
+    ],
+    "price_below": [
+      {"text": "620元/MWh", "mwh": 620},
+      {"text": "650元/MWh", "mwh": 650},
+      {"text": "700元/MWh", "mwh": 700},
+      {"text": "720元/MWh", "mwh": 720},
+      {"text": "750元/MWh", "mwh": 750}
+    ],
+    "price_equal": [
+      {"text": "760元/MWh", "mwh": 760},
+      {"text": "760元/千度", "mwh": 760}
+    ],
+    "unit_price": [
+      {"text": "0.8元/kWh", "mwh": 800},
+      {"text": "0.85元/kWh", "mwh": 850},
+      {"text": "0.7元/kWh", "mwh": 700},
+      {"text": "0.75元/kWh", "mwh": 750},
+      {"text": "0.76元/kWh", "mwh": 760},
+      {"text": "500元/千度", "mwh": 500},
+      {"text": "600元/千度", "mwh": 600},
+      {"text": "820元/千度", "mwh": 820}
+    ],
+    "quantity": [
+      {"text": "30000kWh", "mwh": 30000},
+      {"text": "50000kWh", "mwh": 50000},
+      {"text": "15000kWh", "mwh": 15000},
+      {"text": "10000kWh", "mwh": 10000},
+      {"text": "8000kWh", "mwh": 8000},
+      {"text": "5000kWh", "mwh": 5000},
+      {"text": "3万kWh", "mwh": 30000},
+      {"text": "2万kWh", "mwh": 20000},
+      {"text": "0.8万kWh", "mwh": 8000}
+    ],
+    "date": [
+      "2025年3月15日", "2025年6月1日", "2024年12月31日", "2025年1月1日",
+      "2025年4月30日", "2025年7月1日", "2024年10月1日"
+    ],
+    "article_no": [
+      "一", "五", "八", "十", "十二", "十五", "二十", "二十五"
+    ],
+    "ref_article": ["三", "六", "八", "十二", "十五"],
+    "paragraph": ["第（一）款", "第（二）款", "第（三）款", "第（四）款"],
+    "doc_name": [
+      "省间电力现货交易规则", "省内电力交易规则", "电力市场监管办法",
+      "省间电力中长期交易规则", "电力市场运营基本规则"
+    ],
+    "other_doc_name": [
+      "省内电力交易规则", "电力市场监管办法", "省间电力中长期交易规则", "电力市场运营基本规则"
+    ],
+    "out_region": ["华北", "华南", "华东", "西北", "南方区域", "东北区域", "全国"],
+    "no_such_article": ["99", "100", "200", "50"],
+    "page": ["3", "5", "8", "12"],
+    "citation_text": [
+      "现货出清电价上限为760元/MWh",
+      "申报电价不得超过760元/MWh",
+      "省间现货交易价格上限为760元/兆瓦时",
+      "现货市场采用集中竞价方式出清",
+      "交易组织分为日前和实时两个阶段"
+    ]
+  },
+  "templates": [
     {
-      "scenario_id": "extract_001",
+      "template_id": "extract_001",
       "category": "extract",
-      "user_query": "根据省间现货规则的价格表，冀北的日前现货出清电价上限是多少？",
-      "expected_workflow": "extract_table_data(地区=冀北, 列=电价上限) → 结论",
+      "query_template": "{region}的日前现货出清电价上限是多少？",
+      "slots": ["region"],
       "expected_tools": ["extract_table_data"],
-      "expected_decision": "无法判断",
-      "note": "表格取数验证；结论需基于提取值"
-    },
-    {
-      "scenario_id": "extract_002",
-      "category": "extract",
-      "user_query": "山西的现货申报价格上限是多少元/MWh？",
-      "expected_workflow": "extract_table_data(地区=山西, 列=价格上限) → 结论",
-      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=电价上限) → 返回提取值",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "compare_001",
+      "template_id": "extract_002",
+      "category": "extract",
+      "query_template": "{region}的日前现货出清电价上限是多少元/MWh？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=电价上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_003",
+      "category": "extract",
+      "query_template": "请问{region}的价格上限是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=价格上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_004",
+      "category": "extract",
+      "query_template": "{region}上限多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=电价上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_005",
+      "category": "extract",
+      "query_template": "根据省间现货规则的价格表，{region}对应的上限值是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 表=价格表, 列=上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_006",
+      "category": "extract",
+      "query_template": "价格上限表中{region}对应的上限值是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 表=价格上限表, 列=上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_007",
+      "category": "extract",
+      "query_template": "帮我查一下{region}的现货电价上限",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=现货电价上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_008",
+      "category": "extract",
+      "query_template": "{region}的出清电价最高能到多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=出清电价上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_009",
+      "category": "extract",
+      "query_template": "省间电力现货交易规则的价格表中，{region}的价格上限是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 表=价格表, 列=价格上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_010",
+      "category": "extract",
+      "query_template": "查一下{region}在日前现货市场的出清电价上限",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=出清电价上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_011",
+      "category": "extract",
+      "query_template": "{region}的日前现货出清电价上限规定是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 列=电价上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "extract_012",
+      "category": "extract",
+      "query_template": "现货价格上限表里，{region}的值是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({region}, 表=现货价格上限表, 列=上限) → 返回提取值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "compare_001",
       "category": "compare",
-      "user_query": "2025年3月15日冀北的日前现货出清电价800元/MWh是否超过价格上限？",
-      "expected_workflow": "extract_table_data(冀北, 上限) → arithmetic_compare(800 gt 760) → 不符合",
+      "query_template": "{price}是否超过价格上限？",
+      "slots": ["price"],
       "expected_tools": ["extract_table_data", "arithmetic_compare"],
-      "expected_decision": "不符合"
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
     },
     {
-      "scenario_id": "compare_002",
+      "template_id": "compare_002",
       "category": "compare",
-      "user_query": "2025年3月15日冀北的日前现货出清电价500元/MWh是否低于价格上限？",
-      "expected_workflow": "extract_table_data(冀北, 上限) → arithmetic_compare(500 lt 760) → 符合",
+      "query_template": "{price}超没超过上限？",
+      "slots": ["price"],
       "expected_tools": ["extract_table_data", "arithmetic_compare"],
-      "expected_decision": "符合"
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
     },
     {
-      "scenario_id": "compare_003",
+      "template_id": "compare_003",
       "category": "compare",
-      "user_query": "申报电价恰好等于760元/MWh，是否满足价格上限要求？",
-      "expected_workflow": "arithmetic_compare(760 eq 760) → 符合",
-      "expected_tools": ["arithmetic_compare"],
-      "expected_decision": "符合"
+      "query_template": "价格为{price}，请问合规吗？",
+      "slots": ["price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
     },
     {
-      "scenario_id": "compare_004",
+      "template_id": "compare_004",
       "category": "compare",
-      "user_query": "实际出清价780元/MWh与上限760元/MWh相比是高了还是低了？",
-      "expected_workflow": "arithmetic_compare(780 gt 760) → 高出20元/MWh",
-      "expected_tools": ["arithmetic_compare"],
-      "expected_decision": "不符合"
+      "query_template": "{price}这个价格，符合上限要求吗？",
+      "slots": ["price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
     },
     {
-      "scenario_id": "unit_001",
-      "category": "unit",
-      "user_query": "报价为0.8元/kWh，换算成元/MWh 是多少？是否超过760元/MWh的上限？",
-      "expected_workflow": "unit_converter(0.8, 元/kWh, 元/MWh) → arithmetic_compare(800 gt 760) → 不符合",
-      "expected_tools": ["unit_converter", "arithmetic_compare"],
-      "expected_decision": "不符合"
+      "template_id": "compare_005",
+      "category": "compare",
+      "query_template": "{price}高于上限了吗？",
+      "slots": ["price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
     },
     {
-      "scenario_id": "unit_002",
-      "category": "unit",
-      "user_query": "交易申报量为30000kWh，是否符合单笔交易不少于1万kWh的要求？",
-      "expected_workflow": "unit_converter(30000, kWh, 万kWh) → arithmetic_compare(3 gte 1) → 符合",
-      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "template_id": "compare_006",
+      "category": "compare",
+      "query_template": "出清电价{price}，是否在上限以内？",
+      "slots": ["price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_007",
+      "category": "compare",
+      "query_template": "{price}和上限比，是高了还是低了？",
+      "slots": ["price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_008",
+      "category": "compare",
+      "query_template": "{price}没有超过上限吧？",
+      "slots": ["price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_009",
+      "category": "compare",
+      "query_template": "{price_equal}恰好等于上限，合规吗？",
+      "slots": ["price_equal"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} eq 上限) → 等于上限合规",
+      "decision_rule": "fixed",
       "expected_decision": "符合"
     },
     {
-      "scenario_id": "date_001",
-      "category": "date",
-      "user_query": "省间电力现货交易规则2025年3月15日时是否已经生效？",
-      "expected_workflow": "validate_date_applicability(规则文本, 2025-03-15) → 有效",
-      "expected_tools": ["validate_date_applicability"],
+      "template_id": "compare_010",
+      "category": "compare",
+      "query_template": "{price_below}是否低于760元/MWh的上限？",
+      "slots": ["price_below"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data(列=价格上限) → arithmetic_compare({price} lt 760) → 低于上限合规",
+      "decision_rule": "fixed",
       "expected_decision": "符合"
     },
     {
-      "scenario_id": "date_002",
+      "template_id": "compare_011",
+      "category": "compare",
+      "query_template": "{region}的日前现货出清电价{price}是否超过价格上限？",
+      "slots": ["region", "price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data({region}, 列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_012",
+      "category": "compare",
+      "query_template": "{date}{region}的日前现货出清电价{price}是否超过价格上限？",
+      "slots": ["date", "region", "price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data({region}, 列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_013",
+      "category": "compare",
+      "query_template": "{date}，{region}的日前现货出清电价{price}，是否符合价格上限规则？",
+      "slots": ["date", "region", "price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data({region}, 列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_014",
+      "category": "compare",
+      "query_template": "帮我判断一下，{region}的日前现货出清电价{price}合规吗？",
+      "slots": ["region", "price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data({region}, 列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "compare_015",
+      "category": "compare",
+      "query_template": "{region}出清电价{price}，是否已经超过上限？",
+      "slots": ["region", "price"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data({region}, 列=价格上限) → arithmetic_compare({price} gt 上限) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_001",
+      "category": "unit",
+      "query_template": "{unit_price}换算成元/MWh是多少？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → 返回换算值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "unit_002",
+      "category": "unit",
+      "query_template": "报价{unit_price}，是否超过760元/MWh的上限？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → arithmetic_compare(换算值 gt 760) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_003",
+      "category": "unit",
+      "query_template": "{unit_price}相当于多少元/MWh？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → 返回换算值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "unit_004",
+      "category": "unit",
+      "query_template": "{unit_price}超没超过760元/MWh的上限？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → arithmetic_compare(换算值 gt 760) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_005",
+      "category": "unit",
+      "query_template": "帮我换算一下{unit_price}，再判断是否超限",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → arithmetic_compare(换算值 gt 760) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_006",
+      "category": "unit",
+      "query_template": "{unit_price}是多少元每兆瓦时？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → 返回换算值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "unit_007",
+      "category": "unit",
+      "query_template": "报价{unit_price}，与760元/MWh的上限比，合规吗？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → arithmetic_compare(换算值 gt 760) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_008",
+      "category": "unit",
+      "query_template": "把{unit_price}换成元/MWh，看看有没有超限",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → arithmetic_compare(换算值 gt 760) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_009",
+      "category": "unit",
+      "query_template": "{unit_price}，按元/MWh算是多少？超没超760的上限？",
+      "slots": ["unit_price"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({unit_price}, → 元/MWh) → arithmetic_compare(换算值 gt 760) → 结论",
+      "decision_rule": "gt760_bad",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_010",
+      "category": "unit",
+      "query_template": "交易量{quantity}，符合单笔交易不少于1万kWh的要求吗？",
+      "slots": ["quantity"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({quantity}, → kWh) → arithmetic_compare(换算值 gte 10000) → 结论",
+      "decision_rule": "gte_10000_good",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "unit_011",
+      "category": "unit",
+      "query_template": "{quantity}的交易量是否满足单笔不少于1万kWh的要求？",
+      "slots": ["quantity"],
+      "expected_tools": ["unit_converter", "arithmetic_compare"],
+      "expected_workflow": "unit_converter({quantity}, → kWh) → arithmetic_compare(换算值 gte 10000) → 结论",
+      "decision_rule": "gte_10000_good",
+      "expected_decision": ""
+    },
+    {
+      "template_id": "date_001",
       "category": "date",
-      "user_query": "用2024年1月1日实施的旧版规则判断2025年6月的交易是否合适？",
-      "expected_workflow": "validate_date_applicability(旧规则, 2025-06-01) → 已废止不适用",
+      "query_template": "省间电力现货交易规则在{date}时是否已经生效？",
+      "slots": ["date"],
       "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability(规则=省间电力现货交易规则, {date}) → 生效状态",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_002",
+      "category": "date",
+      "query_template": "{date}的交易能依据省间电力现货交易规则判断吗？",
+      "slots": ["date"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability(规则=省间电力现货交易规则, {date}) → 适用性",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_003",
+      "category": "date",
+      "query_template": "用{doc_name}判断{date}的交易合适吗？",
+      "slots": ["doc_name", "date"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}, {date}) → 适用性",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_004",
+      "category": "date",
+      "query_template": "{date}时点，{doc_name}适用吗？",
+      "slots": ["date", "doc_name"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}, {date}) → 适用性",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_005",
+      "category": "date",
+      "query_template": "规则规定{doc_name}于2024年12月31日废止，2025年3月15日的交易还能依据它判断吗？",
+      "slots": ["doc_name"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}, 2025-03-15) → 已废止不适用",
+      "decision_rule": "fixed",
       "expected_decision": "不符合"
     },
     {
-      "scenario_id": "cross_ref_001",
+      "template_id": "date_006",
+      "category": "date",
+      "query_template": "{doc_name}在{date}时是否有效？",
+      "slots": ["doc_name", "date"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}, {date}) → 有效性",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_007",
+      "category": "date",
+      "query_template": "我想用{doc_name}审查{date}的申报，这规则那时生效了吗？",
+      "slots": ["doc_name", "date"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}, {date}) → 生效状态",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_008",
+      "category": "date",
+      "query_template": "{date}的时候，{doc_name}已经实施了吗？",
+      "slots": ["date", "doc_name"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}, {date}) → 生效状态",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "date_009",
+      "category": "date",
+      "query_template": "2024年1月1日实施的旧版规则，能用来判断{date}的交易吗？",
+      "slots": ["date"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability(旧版规则, {date}) → 旧版已废止不适用",
+      "decision_rule": "fixed",
+      "expected_decision": "不符合"
+    },
+    {
+      "template_id": "date_010",
+      "category": "date",
+      "query_template": "{doc_name}的生效日期是什么时候？",
+      "slots": ["doc_name"],
+      "expected_tools": ["validate_date_applicability"],
+      "expected_workflow": "validate_date_applicability({doc_name}) → 生效日期",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "cross_ref_001",
       "category": "cross_ref",
-      "user_query": "现货交易规则第十条提到的\"参照第五条执行\"，第五条的具体内容是什么？",
-      "expected_workflow": "resolve_cross_reference(引用文本) → locate_clause(第五条) → 原文",
+      "query_template": "{doc_name}第{article_no}条提到的“参照第{ref_article}条执行”，第{ref_article}条的具体内容是什么？",
+      "slots": ["doc_name", "article_no", "ref_article"],
       "expected_tools": ["resolve_cross_reference", "locate_clause"],
+      "expected_workflow": "resolve_cross_reference(引用文本) → locate_clause({ref_article}) → 原文",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "locate_001",
+      "template_id": "cross_ref_002",
+      "category": "cross_ref",
+      "query_template": "第{article_no}条引用的第{ref_article}条，具体说了什么？",
+      "slots": ["article_no", "ref_article"],
+      "expected_tools": ["resolve_cross_reference", "locate_clause"],
+      "expected_workflow": "resolve_cross_reference(引用文本) → locate_clause({ref_article}) → 原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "cross_ref_003",
+      "category": "cross_ref",
+      "query_template": "{doc_name}第{article_no}条“参照第{ref_article}条”，被引用的条款是什么规定？",
+      "slots": ["doc_name", "article_no", "ref_article"],
+      "expected_tools": ["resolve_cross_reference", "locate_clause"],
+      "expected_workflow": "resolve_cross_reference(引用文本) → locate_clause({ref_article}) → 原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "cross_ref_004",
+      "category": "cross_ref",
+      "query_template": "帮我查一下第{article_no}条引用了哪一条，再看那条的内容",
+      "slots": ["article_no"],
+      "expected_tools": ["resolve_cross_reference", "locate_clause"],
+      "expected_workflow": "resolve_cross_reference(第{article_no}条引用) → locate_clause(目标条款) → 原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "cross_ref_005",
+      "category": "cross_ref",
+      "query_template": "第十条说“按第五条执行”，第五条的具体内容是什么？",
+      "slots": [],
+      "expected_tools": ["resolve_cross_reference", "locate_clause"],
+      "expected_workflow": "resolve_cross_reference(第十条引用) → locate_clause(第五条) → 原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_001",
       "category": "locate",
-      "user_query": "请定位省间现货交易规则第十二条的原文内容。",
-      "expected_workflow": "locate_clause(第十二条, doc_name=省间) → 原文",
+      "query_template": "请定位{doc_name}第{article_no}条的原文内容。",
+      "slots": ["doc_name", "article_no"],
       "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {doc_name}) → 条款原文",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "locate_002",
+      "template_id": "locate_002",
       "category": "locate",
-      "user_query": "规则第五条第（二）款对超过上限的申报是怎么规定的？",
-      "expected_workflow": "locate_clause(第五条, 第（二）款) → 款原文 → 结论",
+      "query_template": "{doc_name}第{article_no}条具体是怎么规定的？",
+      "slots": ["doc_name", "article_no"],
       "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {doc_name}) → 条款原文",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "numeric_001",
+      "template_id": "locate_003",
+      "category": "locate",
+      "query_template": "规则第{article_no}条第{paragraph}的原文是什么？",
+      "slots": ["article_no", "paragraph"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {paragraph}) → 款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_004",
+      "category": "locate",
+      "query_template": "第{article_no}条对超过上限的申报是怎么规定的？",
+      "slots": ["article_no"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}) → 条款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_005",
+      "category": "locate",
+      "query_template": "帮我找到{doc_name}第{article_no}条的内容",
+      "slots": ["doc_name", "article_no"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {doc_name}) → 条款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_006",
+      "category": "locate",
+      "query_template": "{doc_name}第{article_no}条的原文是什么？",
+      "slots": ["doc_name", "article_no"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {doc_name}) → 条款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_007",
+      "category": "locate",
+      "query_template": "第{article_no}条在哪里？把原文给我",
+      "slots": ["article_no"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}) → 条款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_008",
+      "category": "locate",
+      "query_template": "请把{doc_name}第{article_no}条的内容贴出来",
+      "slots": ["doc_name", "article_no"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {doc_name}) → 条款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_009",
+      "category": "locate",
+      "query_template": "{doc_name}第{article_no}条第{paragraph}款是怎么说的？",
+      "slots": ["doc_name", "article_no", "paragraph"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {paragraph}, {doc_name}) → 款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "locate_010",
+      "category": "locate",
+      "query_template": "第{article_no}条第{paragraph}的内容是什么？",
+      "slots": ["article_no", "paragraph"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause({article_no}, {paragraph}) → 款原文",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "numeric_001",
       "category": "numeric",
-      "user_query": "规则正文中关于冀北现货出清电价上限规定的具体数值是多少？",
-      "expected_workflow": "extract_numeric_fact(正文, subject=冀北) → 数值",
+      "query_template": "{doc_name}正文中关于{region}现货出清电价上限规定的具体数值是多少？",
+      "slots": ["doc_name", "region"],
       "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject={region}) → 数值",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "numeric_002",
+      "template_id": "numeric_002",
       "category": "numeric",
-      "user_query": "市场管理细则规定的中长期合同电量占比是多少？",
-      "expected_workflow": "extract_numeric_fact(正文) → 占比数值",
+      "query_template": "{doc_name}规定的中长期合同电量占比是多少？",
+      "slots": ["doc_name"],
       "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject=中长期合同电量占比) → 数值",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "conflict_001",
+      "template_id": "numeric_003",
+      "category": "numeric",
+      "query_template": "正文里规定的申报时段是几点到几点？",
+      "slots": [],
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject=申报时段) → 数值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "numeric_004",
+      "category": "numeric",
+      "query_template": "规则里对安全校核时间的规定是什么数值？",
+      "slots": [],
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject=安全校核时间) → 数值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "numeric_005",
+      "category": "numeric",
+      "query_template": "{doc_name}中关于出清电价上限的具体数值是什么？",
+      "slots": ["doc_name"],
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject=出清电价上限) → 数值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "numeric_006",
+      "category": "numeric",
+      "query_template": "规则正文提到{region}的现货电价上限是多少？",
+      "slots": ["region"],
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject={region}) → 数值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "numeric_007",
+      "category": "numeric",
+      "query_template": "{doc_name}里规定的结算周期是多少？",
+      "slots": ["doc_name"],
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject=结算周期) → 数值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "numeric_008",
+      "category": "numeric",
+      "query_template": "把{doc_name}正文里关于申报电价的数值都提取出来",
+      "slots": ["doc_name"],
+      "expected_tools": ["extract_numeric_fact"],
+      "expected_workflow": "extract_numeric_fact(正文, subject=申报电价) → 数值列表",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "conflict_001",
       "category": "conflict",
-      "user_query": "省间现货规则规定上限800元/MWh，省内规则规定760元/MWh，两者是否冲突？",
+      "query_template": "省间现货规则规定上限{price_above}，省内规则规定上限760元/MWh，两者是否冲突？",
+      "slots": ["price_above"],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
       "expected_workflow": "locate_clause(双方上限条款) → detect_rule_conflict(pairs) → 数值冲突",
-      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "decision_rule": "fixed",
       "expected_decision": "不符合"
     },
     {
-      "scenario_id": "conflict_002",
+      "template_id": "conflict_002",
       "category": "conflict",
-      "user_query": "现货规则与中长期规则对申报时段的规定是否一致？",
+      "query_template": "省间现货规则规定上限{price_above}，省内规则规定上限760元/MWh，两者规定是否一致？",
+      "slots": ["price_above"],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(双方上限条款) → detect_rule_conflict(pairs) → 数值冲突",
+      "decision_rule": "fixed",
+      "expected_decision": "不符合"
+    },
+    {
+      "template_id": "conflict_003",
+      "category": "conflict",
+      "query_template": "省间现货规则规定上限760元/MWh，省内规则规定上限760元/MWh，两者是否冲突？",
+      "slots": [],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(双方上限条款) → detect_rule_conflict(pairs) → 数值一致无冲突",
+      "decision_rule": "fixed",
+      "expected_decision": "符合"
+    },
+    {
+      "template_id": "conflict_004",
+      "category": "conflict",
+      "query_template": "现货规则与中长期规则对申报时段的规定是否一致？",
+      "slots": [],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
       "expected_workflow": "locate_clause(双方条款) → detect_rule_conflict(pairs) → 判定",
-      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "citation_001",
+      "template_id": "conflict_005",
+      "category": "conflict",
+      "query_template": "两套规则的价格上限规定矛盾吗？",
+      "slots": [],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(双方上限条款) → detect_rule_conflict(pairs) → 判定",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "conflict_006",
+      "category": "conflict",
+      "query_template": "监管办法与现货规则对违规申报处罚的规定是否矛盾？",
+      "slots": [],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(双方处罚条款) → detect_rule_conflict(pairs) → 判定",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "conflict_007",
+      "category": "conflict",
+      "query_template": "{doc_name}与{other_doc_name}对出清电价上限的规定一致吗？",
+      "slots": ["doc_name", "other_doc_name"],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(两文档上限条款) → detect_rule_conflict(pairs) → 判定",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "citation_001",
       "category": "citation",
-      "user_query": "我引用\"现货出清电价上限为760元/MWh\"，来源标注为省间现货交易规则第3页，这个引用是否准确？",
-      "expected_workflow": "verify_citation(evidence_text, source, page) → 核验结果",
+      "query_template": "我引用“{citation_text}”，来源标注为{doc_name}第{page}页，这个引用是否准确？",
+      "slots": ["citation_text", "doc_name", "page"],
       "expected_tools": ["verify_citation"],
+      "expected_workflow": "verify_citation({citation_text}, 来源={doc_name}, 页={page}) → 核验结果",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "multi_doc_001",
-      "category": "multi_doc",
-      "user_query": "冀北2025年3月的现货出清电价，省间规则和省内规则哪个规定的上限更高？",
-      "expected_workflow": "locate_clause(省间上限) → locate_clause(省内上限) → extract_table_data/compare → 结论",
-      "expected_tools": ["locate_clause", "arithmetic_compare"],
+      "template_id": "citation_002",
+      "category": "citation",
+      "query_template": "我引用的“{citation_text}”，出处对吗？",
+      "slots": ["citation_text"],
+      "expected_tools": ["verify_citation"],
+      "expected_workflow": "verify_citation({citation_text}) → 核验结果",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "multi_doc_002",
+      "template_id": "citation_003",
+      "category": "citation",
+      "query_template": "这句引用“{citation_text}”标注的章节对不对？",
+      "slots": ["citation_text"],
+      "expected_tools": ["verify_citation"],
+      "expected_workflow": "verify_citation({citation_text}) → 核验结果",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "citation_004",
+      "category": "citation",
+      "query_template": "帮我核验这条引用“{citation_text}”的准确性",
+      "slots": ["citation_text"],
+      "expected_tools": ["verify_citation"],
+      "expected_workflow": "verify_citation({citation_text}) → 核验结果",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "citation_005",
+      "category": "citation",
+      "query_template": "我标注{doc_name}第{page}页，引用“{citation_text}”，对吗？",
+      "slots": ["page", "doc_name", "citation_text"],
+      "expected_tools": ["verify_citation"],
+      "expected_workflow": "verify_citation({citation_text}, 来源={doc_name}, 页={page}) → 核验结果",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "citation_006",
+      "category": "citation",
+      "query_template": "这段引用“{citation_text}”的出处是{doc_name}，核实一下",
+      "slots": ["citation_text", "doc_name"],
+      "expected_tools": ["verify_citation"],
+      "expected_workflow": "verify_citation({citation_text}, 来源={doc_name}) → 核验结果",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "multi_doc_001",
       "category": "multi_doc",
-      "user_query": "监管办法与现货规则对违规申报处罚的规定是否矛盾？",
-      "expected_workflow": "locate_clause(两文档处罚条款) → detect_rule_conflict → 结论",
+      "query_template": "{region}2025年3月的现货出清电价，{doc_name}和{other_doc_name}哪个规定的上限更高？",
+      "slots": ["region", "doc_name", "other_doc_name"],
+      "expected_tools": ["locate_clause", "extract_numeric_fact", "arithmetic_compare"],
+      "expected_workflow": "locate_clause({doc_name}上限) → locate_clause({other_doc_name}上限) → extract_numeric_fact(上限) → arithmetic_compare(比较) → 结论",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "multi_doc_002",
+      "category": "multi_doc",
+      "query_template": "综合{doc_name}和{other_doc_name}，{region}的出清电价应该按哪个标准执行？",
+      "slots": ["doc_name", "other_doc_name", "region"],
       "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(两文档条款) → detect_rule_conflict(pairs) → 判定执行标准",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "compare_005",
-      "category": "compare",
-      "user_query": "2025年3月15日蒙东的日前现货出清电价810元/MWh是否符合价格上限规则？",
-      "expected_workflow": "extract_table_data(蒙东, 上限) → arithmetic_compare(810 gt 上限) → 不符合",
-      "expected_tools": ["extract_table_data", "arithmetic_compare"],
-      "expected_decision": "不符合"
+      "template_id": "multi_doc_003",
+      "category": "multi_doc",
+      "query_template": "{region}的申报电价，用{doc_name}还是{other_doc_name}判断合规？",
+      "slots": ["region", "doc_name", "other_doc_name"],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(两文档条款) → detect_rule_conflict(pairs) → 判定适用规则",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "compare_006",
-      "category": "compare",
-      "user_query": "2025年3月15日四川主网的日前现货出清电价620元/MWh是否在允许范围内？",
-      "expected_workflow": "extract_table_data(四川主网, 上限) → arithmetic_compare(620 lt 760) → 符合",
-      "expected_tools": ["extract_table_data", "arithmetic_compare"],
-      "expected_decision": "符合"
+      "template_id": "multi_doc_004",
+      "category": "multi_doc",
+      "query_template": "把{doc_name}和{other_doc_name}中关于{region}上限的规定都找出来",
+      "slots": ["doc_name", "other_doc_name", "region"],
+      "expected_tools": ["locate_clause", "extract_numeric_fact"],
+      "expected_workflow": "locate_clause(两文档上限条款) → extract_numeric_fact(上限) → 汇总数值",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "unit_003",
-      "category": "unit",
-      "user_query": "报价为500元/千度，是否低于760元/MWh的价格上限？",
-      "expected_workflow": "unit_converter(500, 元/千度, 元/MWh) → arithmetic_compare(500 lt 760) → 符合",
-      "expected_tools": ["unit_converter", "arithmetic_compare"],
-      "expected_decision": "符合"
+      "template_id": "multi_doc_005",
+      "category": "multi_doc",
+      "query_template": "{doc_name}与{other_doc_name}对申报时段的规定有冲突吗？",
+      "slots": ["doc_name", "other_doc_name"],
+      "expected_tools": ["locate_clause", "detect_rule_conflict"],
+      "expected_workflow": "locate_clause(两文档申报时段条款) → detect_rule_conflict(pairs) → 判定",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
     },
     {
-      "scenario_id": "date_003",
-      "category": "date",
-      "user_query": "规则规定2024年12月31日废止，2025年3月15日的交易还能依据它判断吗？",
-      "expected_workflow": "validate_date_applicability(废止日期, 2025-03-15) → 已废止 → 不适用",
-      "expected_tools": ["validate_date_applicability"],
-      "expected_decision": "不符合"
-    },
-    {
-      "scenario_id": "extract_003",
-      "category": "extract",
-      "user_query": "价格上限表中蒙西对应的上限值是多少？",
-      "expected_workflow": "extract_table_data(地区=蒙西, 列=价格上限) → 结论",
+      "template_id": "recovery_001",
+      "category": "recovery",
+      "query_template": "{out_region}的价格上限是多少？",
+      "slots": ["out_region"],
       "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({out_region}) → 未命中 → 修正为省区名重试",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "recovery_002",
+      "category": "recovery",
+      "query_template": "查一下{out_region}的日前现货出清电价上限",
+      "slots": ["out_region"],
+      "expected_tools": ["extract_table_data"],
+      "expected_workflow": "extract_table_data({out_region}) → 未命中 → 修正为省区名重试",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "recovery_003",
+      "category": "recovery",
+      "query_template": "第{no_such_article}条的内容是什么？",
+      "slots": ["no_such_article"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause(第{no_such_article}条) → 未命中 → 反馈未找到",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "recovery_004",
+      "category": "recovery",
+      "query_template": "帮我找一下{doc_name}第99条的规定",
+      "slots": ["doc_name"],
+      "expected_tools": ["locate_clause"],
+      "expected_workflow": "locate_clause(第99条, {doc_name}) → 未命中 → 反馈未找到",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "recovery_005",
+      "category": "recovery",
+      "query_template": "{out_region}和冀北，哪个价格上限更高？",
+      "slots": ["out_region"],
+      "expected_tools": ["extract_table_data", "arithmetic_compare"],
+      "expected_workflow": "extract_table_data({out_region}) → 未命中 → 修正为省区名 → arithmetic_compare(比较) → 结论",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_001",
+      "category": "negative",
+      "query_template": "电力交易为什么要有价格上限？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_002",
+      "category": "negative",
+      "query_template": "请解释一下什么叫日前现货交易",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_003",
+      "category": "negative",
+      "query_template": "省间现货交易有哪些参与主体？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_004",
+      "category": "negative",
+      "query_template": "你觉得760元/MWh的价格上限合理吗？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_005",
+      "category": "negative",
+      "query_template": "申报流程一般需要几个工作日？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_006",
+      "category": "negative",
+      "query_template": "中长期交易和现货交易有什么区别？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_007",
+      "category": "negative",
+      "query_template": "价格上限的作用是什么？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_008",
+      "category": "negative",
+      "query_template": "请介绍一下省间电力现货交易规则的总体框架",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_009",
+      "category": "negative",
+      "query_template": "电力现货市场的结算周期是怎么设计的？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_010",
+      "category": "negative",
+      "query_template": "为什么各省价格上限不一样？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_011",
+      "category": "negative",
+      "query_template": "交易申报的流程是什么？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_012",
+      "category": "negative",
+      "query_template": "你能解释一下什么是出清电价吗？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_013",
+      "category": "negative",
+      "query_template": "价格上限是越高越好吗？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_014",
+      "category": "negative",
+      "query_template": "现货交易和期货交易有什么不同？",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_015",
+      "category": "negative",
+      "query_template": "帮我总结一下这份规则的主要内容",
+      "slots": [],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_016",
+      "category": "negative",
+      "query_template": "{doc_name}的总体框架是怎样的？",
+      "slots": ["doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_017",
+      "category": "negative",
+      "query_template": "{doc_name}规定了哪些交易参与主体？",
+      "slots": ["doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_018",
+      "category": "negative",
+      "query_template": "{doc_name}的交易申报流程是什么？",
+      "slots": ["doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_019",
+      "category": "negative",
+      "query_template": "{doc_name}中的价格形成机制是怎样的？",
+      "slots": ["doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_020",
+      "category": "negative",
+      "query_template": "请解释{doc_name}中的日前现货交易",
+      "slots": ["doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_021",
+      "category": "negative",
+      "query_template": "{doc_name}和{other_doc_name}的适用范围有什么区别？",
+      "slots": ["doc_name", "other_doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_022",
+      "category": "negative",
+      "query_template": "请用通俗的语言解释{doc_name}的价格上限条款",
+      "slots": ["doc_name"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_023",
+      "category": "negative",
+      "query_template": "{region}的电力市场为什么要设置价格上限？",
+      "slots": ["region"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_024",
+      "category": "negative",
+      "query_template": "你能解释一下{region}现货出清电价的形成过程吗？",
+      "slots": ["region"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
+      "expected_decision": "无法判断"
+    },
+    {
+      "template_id": "negative_025",
+      "category": "negative",
+      "query_template": "{doc_name}中{region}的上限为什么和其他省不一样？",
+      "slots": ["doc_name", "region"],
+      "expected_tools": [],
+      "expected_workflow": "",
+      "decision_rule": "fixed",
       "expected_decision": "无法判断"
     }
   ]
